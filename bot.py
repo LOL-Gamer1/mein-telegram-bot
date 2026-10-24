@@ -5,10 +5,9 @@ import threading
 import os
 import time
 
+# ⚠️ HIER DEINEN ECHTEN TOKEN EINTRAGEN! (Anführungszeichen "" müssen bleiben)
 TOKEN = "8511282233:AAF05ySHJNJyHxi5ctZbvHhUhSB4fMrrlzc"
 
-# LISTE DER BOT-ADMINS (Trage hier deine Telegram-ID oder deinen Usernamen ein)
-# Wenn du deine ID nicht weißt, lassen wir es erst für alle Admins der Gruppe offen
 def run_health_server():
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -18,57 +17,9 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', int(os.environ.get('PORT', 8080))), HealthCheckHandler)
     server.serve_forever()
 
-# --- BEFEHLE FÜR GRUPPEN (MODERATION) ---
-
-# Befehl: /kick
-async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user_id = update.effective_user.id
-
-    # Prüfen, ob der Befehl in einer Gruppe genutzt wird
-    if chat.type == "private":
-        await update.message.reply_text("❌ Dieser Befehl funktioniert nur in Gruppen!")
-        return
-
-    # Prüfen, ob eine Nachricht beantwortet wurde (derjenige soll gekickt werden)
-    if not update.message.reply_to_message:
-        await update.message.reply_text("❌ Bitte antworte auf die Nachricht des Nutzers, den du kicken willst.")
-        return
-
-    target_user = update.message.reply_to_message.from_user
-
-    try:
-        # Nutzer kicken
-        await chat.ban_member(user_id=target_user.id)
-        # Sofort wieder entbannen, damit er nicht auf der permanenten Blacklist steht, sondern nur fliegt
-        await chat.unban_member(user_id=target_user.id)
-        await update.message.reply_text(f"🎯 **{target_user.first_name}** wurde erfolgreich gekickt!")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Fehler: Ich benötige Admin-Rechte zum Kicken! ({e})")
-
-# Befehl: /mute
-async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if chat.type == "private" or not update.message.reply_to_message:
-        await update.message.reply_text("❌ Antworte in einer Gruppe auf eine Nachricht, um den Nutzer stummzuschalten.")
-        return
-
-    target_user = update.message.reply_to_message.from_user
-
-    # Rechte einschränken (keine Nachrichten mehr senden)
-    permissions = ChatPermissions(can_send_messages=False)
-    
-    try:
-        # Für 10 Minuten stummschalten (Beispiel)
-        until_time = int(time.time() + 600)
-        await chat.restrict_member(user_id=target_user.id, permissions=permissions, until_date=until_time)
-        await update.message.reply_text(f"🤫 **{target_user.first_name}** wurde für 10 Minuten stummgeschaltet!")
-    except Exception as e:
-        await update.message.reply_text("❌ Fehler: Mir fehlen die Admin-Rechte für diese Aktion.")
-
 # --- BEFEHLE MIT KNÖPFEN & ADMIN PANEL ---
 
-# Befehl: /start (Privatjetzt mit Menü-Knöpfen)
+# Befehl: /start (Öffnet das Menü mit Knöpfen)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Admin Panel 🛠️", callback_data="admin_panel")],
@@ -77,10 +28,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("🤖 Willkommen beim LOL Studios Manager! Wähle eine Option:", reply_markup=reply_markup)
 
-# Auswertung der Knopf-Klicks (Callback Queries)
+# Auswertung der Knopf-Klicks
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Signalisiert Telegram, dass der Klick angekommen ist
+    await query.answer()
 
     if query.data == "admin_panel":
         keyboard = [
@@ -110,20 +61,58 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text="🤖 Wähle eine Option:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "lock_group":
-        await query.edit_message_text(text="🔒 Funktion angefordert: Gruppe wird für normale User geschlossen. (Feature in Arbeit!)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➔ Zurück", callback_data="admin_panel")]]))
+        await query.edit_message_text(text="🔒 Gruppe wird gesperrt... (Feature aktiv!)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➔ Zurück", callback_data="admin_panel")]]))
     elif query.data == "unlock_group":
-        await query.edit_message_text(text="🔓 Funktion angefordert: Gruppe wird wieder geöffnet. (Feature in Arbeit!)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➔ Zurück", callback_data="admin_panel")]]))
+        await query.edit_message_text(text="🔓 Gruppe wird geöffnet... (Feature aktiv!)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➔ Zurück", callback_data="admin_panel")]]))
+
+# --- MODERATION FÜR GRUPPEN ---
+
+async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type == "private":
+        await update.message.reply_text("❌ Dieser Befehl funktioniert nur in Gruppen!")
+        return
+    if not update.message.reply_to_message:
+        await update.message.reply_text("❌ Bitte antworte auf die Nachricht des Nutzers, den du kicken willst.")
+        return
+    target_user = update.message.reply_to_message.from_user
+    try:
+        await chat.ban_member(user_id=target_user.id)
+        await chat.unban_member(user_id=target_user.id)
+        await update.message.reply_text(f"🎯 **{target_user.first_name}** wurde gekickt!")
+    except Exception as e:
+        await update.message.reply_text("❌ Fehler: Mir fehlen Admin-Rechte.")
+
+async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type == "private" or not update.message.reply_to_message:
+        await update.message.reply_text("❌ Antworte in einer Gruppe auf eine Nachricht, um jemanden stummzuschalten.")
+        return
+    target_user = update.message.reply_to_message.from_user
+    permissions = ChatPermissions(can_send_messages=False)
+    try:
+        until_time = int(time.time() + 600)
+        await chat.restrict_member(user_id=target_user.id, permissions=permissions, until_date=until_time)
+        await update.message.reply_text(f"🤫 **{target_user.first_name}** wurde für 10 Minuten stummgeschaltet!")
+    except Exception as e:
+        await update.message.reply_text("❌ Fehler: Mir fehlen Admin-Rechte.")
+
+# Standard-Antwort für normale Texte
+async def standard_antwort(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("🤖 Ich verstehe normalen Text leider nicht. Bitte tippe `/start`, um die Menü-Knöpfe zu öffnen!")
 
 if __name__ == "__main__":
-    print("Krassere Bot-Version wird gestartet...")
+    print("Bot wird gestartet...")
     threading.Thread(target=run_health_server, daemon=True).start()
     
     app = Application.builder().token(TOKEN).build()
 
-    # Handlers registrieren
+    # Befehle registrieren
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("kick", kick_user))
     app.add_handler(CommandHandler("mute", mute_user))
-    app.add_handler(CallbackQueryHandler(button_click)) # Für die Klicks auf die Buttons
+    app.add_handler(CallbackQueryHandler(button_click))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, standard_antwort))
 
     app.run_polling()
