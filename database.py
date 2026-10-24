@@ -1,25 +1,37 @@
 
 # database.py
 import os
-import sqlite3
-from pathlib import Path
 from contextlib import contextmanager
+import mysql.connector
 
-# FadeHost: DATABASE_PATH kann auf einen dauerhaft gespeicherten
-# Dateipfad gesetzt werden. Ohne Einstellung bleibt der alte Pfad aktiv.
-_default_path = Path(__file__).with_name("lol_manager.db")
-DB_PATH = Path(os.getenv("DATABASE_PATH", str(_default_path))).expanduser()
+
+def mysql_config():
+    required = [
+        "MYSQL_HOST",
+        "MYSQL_DATABASE",
+        "MYSQL_USER",
+        "MYSQL_PASSWORD",
+    ]
+    missing = [key for key in required if not os.getenv(key)]
+    if missing:
+        raise RuntimeError(
+            "Fehlende Umgebungsvariablen: " + ", ".join(missing)
+        )
+
+    return {
+        "host": os.environ["MYSQL_HOST"],
+        "port": int(os.getenv("MYSQL_PORT", "3306")),
+        "database": os.environ["MYSQL_DATABASE"],
+        "user": os.environ["MYSQL_USER"],
+        "password": os.environ["MYSQL_PASSWORD"],
+        "connection_timeout": 15,
+    }
 
 
 @contextmanager
 def connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH, timeout=30)
-    db.row_factory = sqlite3.Row
-
+    db = mysql.connector.connect(**mysql_config())
     try:
-        db.execute("PRAGMA busy_timeout = 30000")
-        db.execute("PRAGMA foreign_keys = ON")
         yield db
         db.commit()
     except Exception:
@@ -31,56 +43,57 @@ def connect():
 
 def init_db():
     with connect() as db:
-        db.execute("""
+        cur = db.cursor()
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT NOT NULL DEFAULT '',
-                name TEXT NOT NULL,
-                bio TEXT NOT NULL DEFAULT '',
-                avatar TEXT NOT NULL DEFAULT '',
-                agegroup TEXT NOT NULL DEFAULT '',
-                registered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                suspended INTEGER NOT NULL DEFAULT 0
+                user_id BIGINT PRIMARY KEY,
+                username VARCHAR(255) NOT NULL DEFAULT '',
+                name VARCHAR(255) NOT NULL DEFAULT '',
+                bio TEXT NOT NULL,
+                avatar TEXT NOT NULL,
+                agegroup VARCHAR(20) NOT NULL DEFAULT '',
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                suspended TINYINT NOT NULL DEFAULT 0
             )
         """)
-
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_accounts_name
-            ON accounts(name COLLATE NOCASE)
-        """)
-
-        db.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS points (
-                user_id INTEGER PRIMARY KEY,
-                amount INTEGER NOT NULL DEFAULT 0
+                user_id BIGINT PRIMARY KEY,
+                amount BIGINT NOT NULL DEFAULT 0
             )
         """)
-
-        db.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_claims (
-                user_id INTEGER NOT NULL,
-                claim_date TEXT NOT NULL,
+                user_id BIGINT NOT NULL,
+                claim_date DATE NOT NULL,
                 PRIMARY KEY (user_id, claim_date)
             )
         """)
-
-        db.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
                 message TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cur.execute("""
+            CREATE INDEX idx_accounts_name
+            ON accounts (name)
+        """)
+        cur.close()
 
 
 def get_account(user_id):
     with connect() as db:
-        row = db.execute(
-            "SELECT * FROM accounts WHERE user_id = ?",
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            "SELECT * FROM accounts WHERE user_id = %s",
             (int(user_id),)
-        ).fetchone()
-        return dict(row) if row else None
+        )
+        row = cur.fetchone()
+        cur.close()
+        return row
 
 
 def is_registered(user_id):
@@ -93,161 +106,173 @@ def is_suspended(user_id):
 
 
 def save_account(
-    user_id,
-    username="",
-    name="",
-    bio="",
-    avatar="",
-    agegroup=""
+    user_id, username="", name="", bio="", avatar="", agegroup=""
 ):
     with connect() as db:
-        db.execute("""
+        cur = db.cursor()
+        cur.execute("""
             INSERT INTO accounts
                 (user_id, username, name, bio, avatar, agegroup)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username,
-                name = excluded.name,
-                bio = excluded.bio,
-                avatar = excluded.avatar,
-                agegroup = excluded.agegroup
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                username = VALUES(username),
+                name = VALUES(name),
+                bio = VALUES(bio),
+                avatar = VALUES(avatar),
+                agegroup = VALUES(agegroup)
         """, (
-            int(user_id),
-            username or "",
-            name or "",
-            bio or "",
-            avatar or "",
-            agegroup or ""
+            int(user_id), username or "", name or "",
+            bio or "", avatar or "", agegroup or ""
         ))
+        cur.close()
 
 
 def set_suspended(user_id, suspended=True):
     with connect() as db:
-        result = db.execute(
-            "UPDATE accounts SET suspended = ? WHERE user_id = ?",
-            (1 if suspended else 0, int(user_id))
+        cur = db.cursor()
+        cur.execute(
+            "UPDATE accounts SET suspended=%s WHERE user_id=%s",
+            (int(bool(suspended)), int(user_id))
         )
-        return result.rowcount > 0
+        changed = cur.rowcount > 0
+        cur.close()
+        return changed
 
 
 def account_count():
     with connect() as db:
-        return db.execute(
-            "SELECT COUNT(*) FROM accounts"
-        ).fetchone()[0]
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM accounts")
+        result = cur.fetchone()[0]
+        cur.close()
+        return result
 
 
 def suspended_count():
     with connect() as db:
-        return db.execute(
-            "SELECT COUNT(*) FROM accounts WHERE suspended = 1"
-        ).fetchone()[0]
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM accounts WHERE suspended=1")
+        result = cur.fetchone()[0]
+        cur.close()
+        return result
 
 
 def list_accounts(limit=50, offset=0):
     with connect() as db:
-        rows = db.execute("""
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
             SELECT * FROM accounts
             ORDER BY registered_at DESC
-            LIMIT ? OFFSET ?
-        """, (int(limit), int(offset))).fetchall()
-        return [dict(row) for row in rows]
+            LIMIT %s OFFSET %s
+        """, (int(limit), int(offset)))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
 
 
 def search_accounts(query, limit=20):
-    term = f"%{query.strip()}%"
+    term = "%" + query.strip() + "%"
     with connect() as db:
-        rows = db.execute("""
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
             SELECT * FROM accounts
-            WHERE name LIKE ? COLLATE NOCASE
-               OR username LIKE ? COLLATE NOCASE
-            ORDER BY name COLLATE NOCASE
-            LIMIT ?
-        """, (term, term, int(limit))).fetchall()
-        return [dict(row) for row in rows]
+            WHERE name LIKE %s OR username LIKE %s
+            ORDER BY name
+            LIMIT %s
+        """, (term, term, int(limit)))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
 
 
 def get_points(user_id):
     with connect() as db:
-        row = db.execute(
-            "SELECT amount FROM points WHERE user_id = ?",
+        cur = db.cursor()
+        cur.execute(
+            "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),)
-        ).fetchone()
-        return row["amount"] if row else 0
+        )
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else 0
 
 
 def add_points(user_id, amount):
     with connect() as db:
-        db.execute("""
+        cur = db.cursor()
+        cur.execute("""
             INSERT INTO points (user_id, amount)
-            VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                amount = amount + excluded.amount
-        """, (int(user_id), int(amount)))
-        row = db.execute(
-            "SELECT amount FROM points WHERE user_id = ?",
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE amount = amount + %s
+        """, (int(user_id), int(amount), int(amount)))
+        cur.execute(
+            "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),)
-        ).fetchone()
-        return row["amount"]
+        )
+        result = cur.fetchone()[0]
+        cur.close()
+        return result
 
 
 def claim_daily(user_id, amount=100):
     from datetime import datetime, timezone
 
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(timezone.utc).date()
 
     with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-
-        already_claimed = db.execute("""
-            SELECT 1 FROM daily_claims
-            WHERE user_id = ? AND claim_date = ?
-        """, (int(user_id), today)).fetchone()
-
-        if already_claimed:
-            row = db.execute(
-                "SELECT amount FROM points WHERE user_id = ?",
-                (int(user_id),)
-            ).fetchone()
-            return False, row["amount"] if row else 0
-
-        db.execute("""
-            INSERT INTO daily_claims (user_id, claim_date)
-            VALUES (?, ?)
-        """, (int(user_id), today))
-
-        db.execute("""
-            INSERT INTO points (user_id, amount)
-            VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                amount = amount + excluded.amount
-        """, (int(user_id), int(amount)))
-
-        row = db.execute(
-            "SELECT amount FROM points WHERE user_id = ?",
+        cur = db.cursor()
+        cur.execute(
+            "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),)
-        ).fetchone()
+        )
+        row = cur.fetchone()
+        current = row[0] if row else 0
 
-        return True, row["amount"]
+        try:
+            cur.execute("""
+                INSERT INTO daily_claims (user_id, claim_date)
+                VALUES (%s, %s)
+            """, (int(user_id), today))
+        except mysql.connector.IntegrityError:
+            cur.close()
+            return False, current
+
+        cur.execute("""
+            INSERT INTO points (user_id, amount)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE amount = amount + %s
+        """, (int(user_id), int(amount), int(amount)))
+        cur.execute(
+            "SELECT amount FROM points WHERE user_id=%s",
+            (int(user_id),)
+        )
+        total = cur.fetchone()[0]
+        cur.close()
+        return True, total
 
 
 def leaderboard(limit=10):
     with connect() as db:
-        rows = db.execute("""
-            SELECT p.user_id, p.amount,
-                   a.name, a.username
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            SELECT p.user_id, p.amount, a.name, a.username
             FROM points p
             LEFT JOIN accounts a ON a.user_id = p.user_id
             ORDER BY p.amount DESC, p.user_id ASC
-            LIMIT ?
-        """, (int(limit),)).fetchall()
-        return [dict(row) for row in rows]
+            LIMIT %s
+        """, (int(limit),))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
 
 
 def create_report(user_id, message):
     with connect() as db:
-        cursor = db.execute("""
+        cur = db.cursor()
+        cur.execute("""
             INSERT INTO reports (user_id, message)
-            VALUES (?, ?)
+            VALUES (%s, %s)
         """, (int(user_id), str(message)))
-        return cursor.lastrowid
+        report_id = cur.lastrowid
+        cur.close()
+        return report_id
