@@ -12,12 +12,9 @@ from telegram.ext import (
 )
 
 import database
-from config import OWNER_ID
+from config import OWNER_ID, BOT_NAME, BOT_VERSION
 from permissions import registration_gate
-from accounts import (
-    build_registration_handler,
-    profile_command,
-)
+from accounts import build_registration_handler, profile_command
 from admin_panel import register_admin_handlers
 from features import register_feature_handlers
 
@@ -28,41 +25,36 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
-
 logger = logging.getLogger("LOLStudiosManager")
 
 
 async def start_command(update: Update, context):
     user = update.effective_user
-
     if not user:
         return
 
-    # Prüfen, ob das Konto bereits in MySQL existiert.
     account = database.get_account(user.id)
 
     if account:
         name = account.get("name") or user.first_name
-
         text = (
             f"👋 Moin {name}!\n\n"
-            "Willkommen zurück beim LOL Studios Manager 🚀\n\n"
-            "👤 /profile – Dein Profil\n"
-            "🎮 /menu – Interaktives Hauptmenü\n"
+            f"Willkommen zurück bei {BOT_NAME} 🌩️\n"
+            f"Version {BOT_VERSION}\n\n"
+            "🎮 /menu – Hauptmenü\n"
+            "👤 /me – Dein Profil\n"
+            "⭐ /points – Punktestand\n"
             "🎁 /daily – Tägliche Belohnung\n"
-            "❓ /help – Alle Commands\n\n"
-            "Viel Spaß!"
+            "❓ /help – Alle Commands"
         )
     else:
         text = (
             f"👋 Moin {user.first_name}!\n\n"
-            "Willkommen beim LOL Studios Manager 🚀\n\n"
+            f"Willkommen bei {BOT_NAME} 🌩️\n\n"
             "📝 /register – Konto erstellen\n"
-            "👤 /profile – Dein Profil\n"
-            "🎮 /menu – Interaktives Hauptmenü\n"
-            "❓ /help – Alle Commands\n\n"
-            "Registriere dich mit /register, "
-            "um alle Funktionen nutzen zu können."
+            "🎮 /menu – Funktionen ansehen\n"
+            "❓ /help – Hilfe\n\n"
+            "Registriere dich, um alle Funktionen zu nutzen."
         )
 
     await update.effective_message.reply_text(text)
@@ -70,20 +62,15 @@ async def start_command(update: Update, context):
 
 async def myid_command(update: Update, context):
     user = update.effective_user
-
-    if not user:
-        return
-
-    await update.effective_message.reply_text(
-        f"🆔 Deine Telegram-ID:\n{user.id}\n\n"
-        "Wenn du der Bot-Owner bist, muss diese Zahl "
-        "als OWNER_ID in config.py eingetragen sein."
-    )
+    if user:
+        await update.effective_message.reply_text(
+            f"🆔 Deine Telegram-ID: {user.id}"
+        )
 
 
 async def error_handler(update: object, context):
     logger.error(
-        "Fehler bei der Verarbeitung eines Updates",
+        "Fehler bei der Update-Verarbeitung",
         exc_info=context.error,
     )
 
@@ -91,55 +78,35 @@ async def error_handler(update: object, context):
 def main():
     if not BOT_TOKEN:
         raise RuntimeError(
-            "BOT_TOKEN fehlt! Lege die Umgebungsvariable "
-            "BOT_TOKEN bei FadeHost an."
+            "BOT_TOKEN fehlt. Lege ihn als Umgebungsvariable bei FadeHost fest."
         )
 
     if not isinstance(OWNER_ID, int) or OWNER_ID <= 0:
-        raise RuntimeError(
-            "Bitte eine gültige numerische OWNER_ID in config.py eintragen."
-        )
+        raise RuntimeError("OWNER_ID in config.py ist ungültig.")
 
     database.init_db()
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Registrierungssperre vor den normalen Commands.
     application.add_handler(
         TypeHandler(Update, registration_gate),
         group=-1,
     )
 
-    application.add_handler(
-        build_registration_handler(),
-        group=0,
-    )
+    application.add_handler(build_registration_handler(), group=0)
+    application.add_handler(CommandHandler("profile", profile_command), group=0)
+    application.add_handler(CommandHandler("me", profile_command), group=0)
 
-    application.add_handler(
-        CommandHandler("profile", profile_command),
-        group=0,
-    )
-
-    application.add_handler(
-        CommandHandler("start", start_command),
-        group=1,
-    )
-
-    application.add_handler(
-        CommandHandler("myid", myid_command),
-        group=1,
-    )
+    application.add_handler(CommandHandler("start", start_command), group=1)
+    application.add_handler(CommandHandler("myid", myid_command), group=1)
+    application.add_handler(CommandHandler("id", myid_command), group=1)
 
     register_feature_handlers(application)
     register_admin_handlers(application)
 
     application.add_error_handler(error_handler)
 
-    logger.info("LOL Studios Manager startet ...")
+    logger.info("%s v%s startet", BOT_NAME, BOT_VERSION)
     application.run_polling()
 
 
