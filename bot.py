@@ -199,32 +199,31 @@ async def standard_antwort(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🤖 Bitte tippe `/start`, um die Menü-Knöpfe zu öffnen!")
 
 if __name__ == "__main__":
-print("Vollständig korrigierte Bot-Version wird gestartet...")
-threading.Thread(target=run_health_server, daemon=True).start()
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("kick", kick_user))
-app.add_handler(CommandHandler("mute", mute_user))
-app.add_handler(CommandHandler("unmute", unmute_user))
-app.add_handler(CommandHandler("warn", warn_user))
-app.add_handler(CommandHandler("pin", pin_message))
-app.add_handler(CommandHandler("say", say_command))
-app.add_handler(CommandHandler("info", info_command))
-app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, standard_antwort))
-app.run_polling() update.message.reply_text("🤖 Bitte tippe /start, um die Menü-Knöpfe zu öffnen!")
-if name == "main":
-print("Reparierte Bot-Version wird gestartet...")
-threading.Thread(target=run_health_server, daemon=True).start()
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("kick", kick_user))
-app.add_handler(CommandHandler("mute", mute_user))
-app.add_handler(CommandHandler("unmute", unmute_user))
-app.add_handler(CommandHandler("warn", warn_user))
-app.add_handler(CommandHandler("pin", pin_message))
-app.add_handler(CommandHandler("say", say_command))
-app.add_handler(CommandHandler("info", info_command))
-app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, standard_antwort))
-app.run_polling()
+    print("LOL Studios Telegram Bot wird gestartet...")
+
+    threading.Thread(
+        target=run_health_server,
+        daemon=True
+    ).start()
+
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("kick", kick_user))
+    app.add_handler(CommandHandler("mute", mute_user))
+    app.add_handler(CommandHandler("unmute", unmute_user))
+    app.add_handler(CommandHandler("warn", warn_user))
+    app.add_handler(CommandHandler("pin", pin_message))
+    app.add_handler(CommandHandler("say", say_command))
+    app.add_handler(CommandHandler("info", info_command))
+
+    app.add_handler(CallbackQueryHandler(button_click))
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            standard_antwort
+        )
+    )
+
+    app.run_polling()
