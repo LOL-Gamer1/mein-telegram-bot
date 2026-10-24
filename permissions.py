@@ -1,5 +1,6 @@
 
 # permissions.py
+# Zugriffskontrolle für LOL Studios Manager
 
 from telegram import Update
 from telegram.ext import ContextTypes, ApplicationHandlerStop
@@ -9,9 +10,19 @@ from config import OWNER_ID, PUBLIC_COMMANDS
 
 
 ALWAYS_ALLOWED_COMMANDS = {
-    "start", "myid", "id", "register", "unregister",
-    "cancel", "skip", "help", "ping", "tos", "gdpr",
-    "permissions", "policy", "optout", "support",
+    "start",
+    "myid",
+    "register",
+    "cancel",
+    "skip",
+    "help",
+    "language",
+    "tos",
+    "gdpr",
+    "permissions",
+    "policy",
+    "optout",
+    "support",
 }
 
 
@@ -28,47 +39,47 @@ async def registration_gate(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
+
     if user is None:
         return
 
-    owner = is_owner(user.id)
+    user_id = user.id
+    owner = is_owner(user_id)
     message = update.effective_message
     query = update.callback_query
 
+    # Sprachbuttons sind auch ohne Registrierung verfügbar.
     if query:
         data = query.data or ""
 
+        if data.startswith("lang:"):
+            return
+
+        # Registrierungsbuttons müssen funktionieren.
         if data.startswith("reg:"):
             return
 
-        if data.startswith(("admin:", "owner:", "dev:")):
+        # Admin-Buttons sind ausschließlich für den Owner.
+        if data.startswith("admin:"):
             if not owner:
                 await query.answer(
-                    "⛔ Dieser Bereich ist nur für den Owner.",
+                    "⛔ Nur der Bot-Owner darf das Admin-Panel nutzen.",
                     show_alert=True,
                 )
                 raise ApplicationHandlerStop
             return
 
-        if data.startswith("team:") and not (
-            owner or database.is_registered(user.id)
-        ):
+        # Andere Buttons benötigen ein registriertes Konto.
+        if not database.is_registered(user_id):
             await query.answer(
                 "🔒 Bitte zuerst /register ausführen.",
                 show_alert=True,
             )
             raise ApplicationHandlerStop
 
-        if not owner and database.is_suspended(user.id):
+        if not owner and database.is_suspended(user_id):
             await query.answer(
-                "⛔ Dein Konto ist gesperrt.",
-                show_alert=True,
-            )
-            raise ApplicationHandlerStop
-
-        if not database.is_registered(user.id) and not owner:
-            await query.answer(
-                "🔒 Bitte zuerst /register ausführen.",
+                "⛔ Dein Bot-Konto ist gesperrt.",
                 show_alert=True,
             )
             raise ApplicationHandlerStop
@@ -84,10 +95,10 @@ async def registration_gate(
     if text.startswith("/"):
         command = text.split()[0].split("@")[0][1:].lower()
 
-    if command in {"admin", "adminpanel", "owner", "dev"}:
+    if command in {"admin", "adminpanel"}:
         if not owner:
             await message.reply_text(
-                "⛔ Dieser Bereich ist nur für den Owner."
+                "⛔ Das Admin-Panel ist nur für den Owner verfügbar."
             )
             raise ApplicationHandlerStop
         return
@@ -101,20 +112,21 @@ async def registration_gate(
     if context.user_data.get("registration_active"):
         await message.reply_text(
             "Du bist gerade bei der Registrierung. "
-            "Beantworte bitte den aktuellen Schritt oder nutze /cancel."
+            "Bitte beantworte den aktuellen Schritt "
+            "oder nutze /cancel."
         )
         raise ApplicationHandlerStop
 
-    if not owner and not database.is_registered(user.id):
+    if not database.is_registered(user_id):
         await message.reply_text(
             "🔒 Du musst dich zuerst registrieren.\n\n"
             "Starte mit /register."
         )
         raise ApplicationHandlerStop
 
-    if not owner and database.is_suspended(user.id):
+    if not owner and database.is_suspended(user_id):
         await message.reply_text(
-            "⛔ Dein Konto wurde gesperrt. "
-            "Du kannst diese Funktion aktuell nicht verwenden."
+            "⛔ Dein Bot-Konto wurde gesperrt. "
+            "Du kannst aktuell keine Commands verwenden."
         )
         raise ApplicationHandlerStop
