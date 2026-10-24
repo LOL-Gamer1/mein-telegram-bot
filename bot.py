@@ -1,882 +1,864 @@
+
 import os
-import time
 import random
 import sqlite3
 import threading
-import asyncio
+import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ChatPermissions
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ChatPermissions,
 )
-from telegram.constants import ChatType
+from telegram.error import (
+    InvalidToken,
+    TelegramError,
+    NetworkError,
+    TimedOut,
+)
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
 )
 
-TOKEN = os.getenv("8511282233:AAF05ySHJNJyHxi5ctZbvHhUhSB4fMrrlzc", "").strip()
-DB_PATH = os.getenv("DB_PATH", "bot_data.sqlite3")
+# ---------------- CONFIG ----------------
+
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+PORT = int(os.getenv("PORT", "10000"))
+DB_FILE = os.getenv("DB_FILE", "bot_data.db")
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+log = logging.getLogger("LOLStudiosManager")
+
+# ---------------- HEALTH CHECK ----------------
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path not in ("/", "/health"):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not found")
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"LOL Studios Manager is running!")
+
+    def log_message(self, format, *args):
+        pass
 
 
-# =============== DATENBANK ===============
+def start_health_server():
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+        ).start()
+        log.info("Health server started on port %s", PORT)
+    except OSError:
+        log.exception("Could not start health server")
 
-def connect_db():
-    return sqlite3.connect(DB_PATH, timeout=10)
 
+# ---------------- DATABASE ----------------
 
 def init_db():
-    with connect_db() as db:
+    with sqlite3.connect(DB_FILE) as db:
         db.execute("""
-            CREATE TABLE IF NOT EXISTS stats (
-                chat_id INTEGER,
-                user_id INTEGER,
+            CREATE TABLE IF NOT EXISTS users (
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
                 xp INTEGER DEFAULT 0,
                 coins INTEGER DEFAULT 0,
-                daily INTEGER DEFAULT 0,
-                PRIMARY KEY(chat_id, user_id)
+                warnings INTEGER DEFAULT 0,
+                PRIMARY KEY (chat_id, user_id)
             )
         """)
+        db.commit()
+
+
+def ensure_user(chat_id, user_id, name):
+    with sqlite3.connect(DB_FILE) as db:
         db.execute("""
-            CREATE TABLE IF NOT EXISTS warnings (
-                chat_id INTEGER,
-                user_id INTEGER,
-                amount INTEGER DEFAULT 0,
-                PRIMARY KEY(chat_id, user_id)
-            )
-        """)
+            INSERT OR IGNORE INTO users
+            (chat_id, user_id, name, xp, coins, warnings)
+            VALUES (?, ?, ?, 0, 0, 0)
+        """, (chat_id, user_id, name))
 
 
-def get_stats(chat_id, user_id):
-    with connect_db() as db:
-        row = db.execute(
-            "SELECT xp,coins,daily FROM stats WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id)
-        ).fetchone()
+def add_reward(chat_id, user_id, name, xp=0, coins=0):
+    ensure_user(chat_id, user_id, name)
+    with sqlite3.connect(DB_FILE) as db:
+        db.execute("""
+            UPDATE users
+            SET name = ?, xp = xp + ?, coins = coins + ?
+            WHERE chat_id = ? AND user_id = ?
+        """, (name, xp, coins, chat_id, user_id))
 
+
+def get_stats(chat_id, user_id, name):
+    ensure_user(chat_id, user_id, name)
+    with sqlite3.connect(DB_FILE) as db:
+        row = db.execute("""
+            SELECT xp, coins, warnings FROM users
+            WHERE chat_id = ? AND user_id = ?
+        """, (chat_id, user_id)).fetchone()
     return row or (0, 0, 0)
 
 
-def change_stats(chat_id, user_id, xp=0, coins=0):
-    with connect_db() as db:
-        db.execute("""
-            INSERT INTO stats(chat_id,user_id,xp,coins,daily)
-            VALUES(?,?,?, ?,0)
-            ON CONFLICT(chat_id,user_id) DO UPDATE SET
-            xp=xp+excluded.xp, coins=coins+excluded.coins
-        """, (chat_id, user_id, xp, coins))
+# ---------------- HELPERS ----------------
+
+def mention(user):
+    name = user.full_name or "User"
+    return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 
-def get_warns(chat_id, user_id):
-    with connect_db() as db:
-        row = db.execute(
-            "SELECT amount FROM warnings WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id)
-        ).fetchone()
-    return row[0] if row else 0
+async def reply(update, text, **kwargs):
+    message = update.effective_message
+    if message:
+        await message.reply_text(text, **kwargs)
 
 
-def set_warns(chat_id, user_id, amount):
-    with connect_db() as db:
-        db.execute("""
-            INSERT INTO warnings(chat_id,user_id,amount)
-            VALUES(?,?,?)
-            ON CONFLICT(chat_id,user_id)
-            DO UPDATE SET amount=excluded.amount
-        """, (chat_id, user_id, max(0, amount)))
+async def get_target(update, context):
+    message = update.effective_message
 
+    if message and message.reply_to_message:
+        return message.reply_to_message.from_user
 
-# =============== HILFSFUNKTIONEN ===============
+    if context.args:
+        raw = context.args[0]
+        if raw.isdigit():
+            try:
+                return await context.bot.get_chat(int(raw))
+            except TelegramError:
+                return None
+
+    return None
+
 
 async def is_admin(update, context):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if not chat or not user or chat.type == ChatType.PRIVATE:
+    if not update.effective_chat or not update.effective_user:
         return False
 
     try:
-        member = await context.bot.get_chat_member(chat.id, user.id)
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id,
+            update.effective_user.id,
+        )
         return member.status in ("administrator", "creator")
-    except Exception:
+    except TelegramError:
         return False
 
 
 async def admin_required(update, context):
-    if await is_admin(update, context):
-        return True
-
-    await update.effective_message.reply_text(
-        "❌ Du brauchst Admin-Rechte für diesen Befehl."
-    )
-    return False
+    if not await is_admin(update, context):
+        await reply(update, "⛔ Dieser Befehl ist nur für Gruppenadmins.")
+        return False
+    return True
 
 
-def target_user(update):
-    msg = update.effective_message
-    if msg and msg.reply_to_message:
-        return msg.reply_to_message.from_user
-    return None
+def group_only(update):
+    chat = update.effective_chat
+    return bool(chat and chat.type in ("group", "supergroup"))
 
 
-def menu_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎮 Spiele", callback_data="games"),
-            InlineKeyboardButton("🛡️ Moderation", callback_data="moderation")
-        ],
-        [
-            InlineKeyboardButton("🏆 Profil", callback_data="profile"),
-            InlineKeyboardButton("😂 Fun", callback_data="fun")
-        ],
-        [
-            InlineKeyboardButton("⚙️ Admin", callback_data="admin"),
-            InlineKeyboardButton("📜 Hilfe", callback_data="help")
-        ]
-    ])
+# ---------------- MENU ----------------
 
+MENU = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("🎮 Spiele", callback_data="menu_games"),
+        InlineKeyboardButton("😂 Fun", callback_data="menu_fun"),
+    ],
+    [
+        InlineKeyboardButton("👤 Profil", callback_data="menu_profile"),
+        InlineKeyboardButton("🏆 Rangliste", callback_data="menu_top"),
+    ],
+    [
+        InlineKeyboardButton("🛡️ Moderation", callback_data="menu_mod"),
+        InlineKeyboardButton("ℹ️ Hilfe", callback_data="menu_help"),
+    ],
+])
 
-def back_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Hauptmenü", callback_data="home")]
-    ])
-
-
-# =============== MENÜ ===============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await menu(update, context)
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user and chat:
+        ensure_user(chat.id, user.id, user.full_name)
+
+    await reply(
+        update,
+        "🚀 <b>LOL Studios Manager</b>\n\n"
+        "Dein Bot für Gruppen, Spiele und Fun!\n"
+        "Öffne das Menü und entdecke die Befehle.",
+        parse_mode="HTML",
+        reply_markup=MENU,
+    )
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "🤖 LOL STUDIOS MANAGER\n\n"
-        "Willkommen! Wähle eine Kategorie.\n\n"
-        "🎮 Spiele\n🛡️ Gruppenmoderation\n"
-        "🏆 Level und Coins\n😂 Fun-Befehle\n⚙️ Admin-Werkzeuge",
-        reply_markup=menu_keyboard()
+    await reply(
+        update,
+        "✨ <b>LOL Studios Manager – Hauptmenü</b>\n"
+        "Wähle eine Kategorie:",
+        parse_mode="HTML",
+        reply_markup=MENU,
     )
 
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    chat = update.effective_chat
-    user = update.effective_user
-    data = q.data
-
-    if data == "home":
-        await q.edit_message_text(
-            "🤖 LOL STUDIOS MANAGER\nWähle eine Kategorie:",
-            reply_markup=menu_keyboard()
-        )
-
-    elif data == "games":
-        await q.edit_message_text(
-            "🎮 **SPIELE**\n\n"
+    pages = {
+        "menu_games": (
+            "🎮 <b>SPIELE</b>\n\n"
             "/dice – Würfeln\n"
-            "/coin – Münzwurf\n"
-            "/rps – Stein-Schere-Papier\n"
+            "/coin – Münze werfen\n"
+            "/rps – Schere, Stein, Papier\n"
             "/guess – Zahl erraten\n"
-            "/quiz – Quiz\n"
-            "/roll – Zufallszahl\n"
-            "/daily – tägliche Belohnung",
-            reply_markup=back_keyboard()
-        )
-
-    elif data == "moderation":
-        await q.edit_message_text(
-            "🛡️ **GRUPPENMODERATION**\n\n"
-            "/kick – Nutzer kicken\n"
-            "/ban – Nutzer bannen\n"
-            "/unban USER_ID – Bann aufheben\n"
-            "/mute – 10 Minuten stummschalten\n"
+            "/quiz – Quizfrage\n"
+            "/roll – Zufallszahl"
+        ),
+        "menu_fun": (
+            "😂 <b>FUN</b>\n\n"
+            "/joke – Zufallswitz\n"
+            "/8ball – Magische Kugel\n"
+            "/choose – Zufällige Auswahl\n"
+            "/say Text – Text wiederholen\n"
+            "/id – Deine ID"
+        ),
+        "menu_profile": (
+            "👤 <b>PROFIL</b>\n\n"
+            "/profile – XP, Coins und Warnungen\n"
+            "/daily – Tägliche Coins\n"
+            "/top – Rangliste"
+        ),
+        "menu_top": (
+            "🏆 <b>RANGLISTE</b>\n\n"
+            "/top – Die Top-Spieler dieses Chats"
+        ),
+        "menu_mod": (
+            "🛡️ <b>GRUPPENMODERATION</b>\n\n"
+            "Antworte auf eine Nachricht oder gib eine User-ID an:\n"
+            "/kick – Mitglied entfernen\n"
+            "/ban – Mitglied sperren\n"
+            "/unban ID – Sperre aufheben\n"
+            "/mute – Stummschalten\n"
             "/unmute – Stummschaltung aufheben\n"
-            "/warn – Verwarnung\n"
+            "/warn – Verwarnen\n"
             "/warnings – Verwarnungen anzeigen\n"
             "/clearwarns – Verwarnungen löschen\n"
             "/purge ZAHL – Nachrichten löschen\n"
-            "/pin /unpin – Nachrichten anheften/lösen\n"
-            "/lock /unlock – Gruppe sperren/öffnen\n"
-            "/admins – Adminliste",
-            reply_markup=back_keyboard()
+            "/pin – Nachricht anheften\n"
+            "/unpin – Anheftung lösen\n"
+            "/lock – Chat sperren\n"
+            "/unlock – Chat freigeben\n"
+            "/admins – Admins anzeigen"
+        ),
+        "menu_help": (
+            "ℹ️ <b>HILFE</b>\n\n"
+            "/start – Start\n"
+            "/menu – Hauptmenü\n"
+            "/help – Alle Kategorien\n"
+            "Bei Moderationsbefehlen brauchst du Adminrechte."
+        ),
+    }
+
+    text = pages.get(query.data, "Menü nicht gefunden.")
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Hauptmenü", callback_data="menu_home")
+        ]]),
+    )
+
+    if query.data == "menu_home":
+        await query.edit_message_text(
+            "✨ <b>LOL Studios Manager</b>\nWähle eine Kategorie:",
+            parse_mode="HTML",
+            reply_markup=MENU,
         )
 
-    elif data == "profile":
-        xp, coins, _ = get_stats(chat.id, user.id)
-        await q.edit_message_text(
-            f"🏆 PROFIL\n\n👤 {user.first_name}\n"
-            f"⭐ Level: {xp // 100 + 1}\n"
-            f"✨ XP: {xp}\n🪙 Coins: {coins}\n\n"
-            "/profile /top /daily",
-            reply_markup=back_keyboard()
-        )
 
-    elif data == "fun":
-        await q.edit_message_text(
-            "😂 FUN-BEFEHLE\n\n"
-            "/joke – Witz\n"
-            "/8ball FRAGE – magische Kugel\n"
-            "/choose A | B – Zufallsauswahl\n"
-            "/hug – virtuelle Umarmung\n"
-            "/roll – Zufallszahl",
-            reply_markup=back_keyboard()
-        )
+# ---------------- PROFILE / REWARDS ----------------
 
-    elif data == "help":
-        await q.edit_message_text(
-            "📜 HILFE\n\n"
-            "/menu – Hauptmenü\n/start – Start\n"
-            "/info – Chat-Informationen\n"
-            "/id – IDs anzeigen\n"
-            "/say TEXT – Text senden\n\n"
-            "Moderationsbefehle benötigen Admin-Rechte. "
-            "Der Bot braucht ebenfalls die entsprechenden Telegram-Rechte.",
-            reply_markup=back_keyboard()
-        )
-
-    elif data == "admin":
-        if chat.type != ChatType.PRIVATE and not await is_admin(update, context):
-            await q.edit_message_text("❌ Nur Gruppenadmins dürfen das Admin-Menü öffnen.")
-            return
-
-        await q.edit_message_text(
-            "⚙️ ADMIN-PANEL\n\n"
-            "/lock – Gruppe sperren\n"
-            "/unlock – Gruppe öffnen\n"
-            "/purge ZAHL – Nachrichten löschen\n"
-            "/admins – Adminliste\n"
-            "/pin /unpin – Anheften",
-            reply_markup=back_keyboard()
-        )
-
-    elif data.startswith("rps_"):
-        choice = data.split("_", 1)[1]
-        bot_choice = random.choice(["stein", "schere", "papier"])
-
-        if choice == bot_choice:
-            result = "Unentschieden!"
-        elif (
-            (choice == "stein" and bot_choice == "schere")
-            or (choice == "schere" and bot_choice == "papier")
-            or (choice == "papier" and bot_choice == "stein")
-        ):
-            result = "🎉 Du gewinnst! +5 Coins"
-            change_stats(chat.id, user.id, coins=5)
-        else:
-            result = "🤖 Der Bot gewinnt!"
-
-        await q.edit_message_text(
-            f"Du: {choice}\nBot: {bot_choice}\n\n{result}"
-        )
-
-    elif data.startswith("quiz_"):
-        answer = data.split("_", 1)[1]
-        if answer == "paris":
-            change_stats(chat.id, user.id, coins=5)
-            result = "✅ Richtig! +5 Coins"
-        else:
-            result = "❌ Falsch! Die Antwort ist Paris."
-
-        await q.edit_message_text(result)
-
-
-# =============== MODERATION ===============
-
-async def kick(update, context):
-    if not await admin_required(update, context):
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
         return
 
-    target = target_user(update)
-    if not target:
-        await update.effective_message.reply_text(
-            "Antworte mit /kick auf eine Nachricht."
-        )
+    xp, coins, warnings = get_stats(chat.id, user.id, user.full_name)
+    level = xp // 100 + 1
+
+    await reply(
+        update,
+        f"👤 <b>{user.full_name}</b>\n\n"
+        f"⭐ XP: {xp}\n"
+        f"📈 Level: {level}\n"
+        f"🪙 Coins: {coins}\n"
+        f"⚠️ Verwarnungen: {warnings}",
+        parse_mode="HTML",
+    )
+
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
         return
 
-    try:
-        await context.bot.ban_chat_member(
-            update.effective_chat.id, target.id
-        )
-        await context.bot.unban_chat_member(
-            update.effective_chat.id, target.id,
-            only_if_banned=True
-        )
-        await update.effective_message.reply_text(
-            f"👢 {target.first_name} wurde gekickt."
-        )
-    except Exception:
-        await update.effective_message.reply_text(
-            "❌ Kicken fehlgeschlagen. Prüfe meine Admin-Rechte."
-        )
-
-
-async def ban(update, context):
-    if not await admin_required(update, context):
+    # Einfache tägliche Belohnung; der Cooldown wird pro Prozess gespeichert.
+    from datetime import date
+    today = date.today().isoformat()
+    key = f"daily_{chat.id}_{user.id}"
+    if context.application.bot_data.get(key) == today:
+        await reply(update, "⏳ Deine Tagesbelohnung hast du schon abgeholt.")
         return
 
-    target = target_user(update)
-    user_id = target.id if target else None
+    context.application.bot_data[key] = today
+    add_reward(chat.id, user.id, user.full_name, xp=20, coins=100)
+    await reply(update, "🎁 Du bekommst 100 Coins und 20 XP!")
 
-    if not user_id and context.args and context.args[0].isdigit():
-        user_id = int(context.args[0])
 
-    if not user_id:
-        await update.effective_message.reply_text(
-            "Antworte mit /ban auf eine Nachricht oder nutze /ban USER_ID."
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    with sqlite3.connect(DB_FILE) as db:
+        rows = db.execute("""
+            SELECT name, xp, coins FROM users
+            WHERE chat_id = ?
+            ORDER BY xp DESC, coins DESC
+            LIMIT 10
+        """, (chat.id,)).fetchall()
+
+    if not rows:
+        await reply(update, "Noch keine Spieler in der Rangliste!")
+        return
+
+    lines = ["🏆 <b>TOP 10</b>"]
+    for i, (name, xp, coins) in enumerate(rows, 1):
+        safe_name = (
+            name.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
         )
-        return
+        lines.append(f"{i}. {safe_name} — ⭐ {xp} XP | 🪙 {coins}")
 
-    try:
-        await context.bot.ban_chat_member(update.effective_chat.id, user_id)
-        await update.effective_message.reply_text(f"⛔ Nutzer {user_id} gebannt.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Bann fehlgeschlagen.")
+    await reply(update, "\n".join(lines), parse_mode="HTML")
 
 
-async def unban(update, context):
-    if not await admin_required(update, context):
-        return
+# ---------------- GAMES ----------------
 
-    if not context.args or not context.args[0].lstrip("-").isdigit():
-        await update.effective_message.reply_text("Nutzung: /unban USER_ID")
-        return
-
-    try:
-        await context.bot.unban_chat_member(
-            update.effective_chat.id, int(context.args[0]),
-            only_if_banned=True
-        )
-        await update.effective_message.reply_text("✅ Bann aufgehoben.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Entbannen fehlgeschlagen.")
+async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user and update.effective_chat:
+        add_reward(update.effective_chat.id, user.id, user.full_name, xp=2, coins=1)
+    await reply(update, "🎲 Du hast gewürfelt!")
+    await context.bot.send_dice(update.effective_chat.id)
 
 
-async def mute(update, context):
-    if not await admin_required(update, context):
-        return
+async def coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, random.choice(["🪙 Kopf!", "🪙 Zahl!"]))
 
-    target = target_user(update)
-    user_id = target.id if target else None
-    minutes = 10
+
+async def rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    choices = ["✂️ Schere", "🪨 Stein", "📄 Papier"]
+    bot_choice = random.choice(choices)
 
     if context.args:
-        if user_id is None and context.args[0].isdigit():
-            user_id = int(context.args[0])
-            if len(context.args) > 1 and context.args[1].isdigit():
-                minutes = int(context.args[1])
-        elif context.args[0].isdigit():
-            minutes = int(context.args[0])
+        raw = context.args[0].lower()
+        aliases = {
+            "schere": "✂️ Schere",
+            "stein": "🪨 Stein",
+            "papier": "📄 Papier",
+        }
+        player = aliases.get(raw)
+        if not player:
+            await reply(update, "Benutze: /rps schere, /rps stein oder /rps papier")
+            return
 
-    minutes = max(1, min(minutes, 10080))
+        if player == bot_choice:
+            result = "Unentschieden!"
+        elif (
+            (player == "✂️ Schere" and bot_choice == "📄 Papier")
+            or (player == "🪨 Stein" and bot_choice == "✂️ Schere")
+            or (player == "📄 Papier" and bot_choice == "🪨 Stein")
+        ):
+            result = "🎉 Du gewinnst!"
+            user = update.effective_user
+            chat = update.effective_chat
+            if user and chat:
+                add_reward(chat.id, user.id, user.full_name, xp=10, coins=5)
+        else:
+            result = "🤖 Ich gewinne!"
+        await reply(update, f"Du: {player}\nBot: {bot_choice}\n\n{result}")
+    else:
+        await reply(update, "Benutze: /rps schere, /rps stein oder /rps papier")
 
-    if not user_id:
-        await update.effective_message.reply_text(
-            "Antworte mit /mute oder nutze /mute USER_ID MINUTEN."
-        )
+
+async def guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    key = f"guess_{update.effective_chat.id}"
+    games = context.application.bot_data.setdefault("guess_games", {})
+    chat_id = update.effective_chat.id
+
+    if not context.args:
+        games[chat_id] = random.randint(1, 10)
+        await reply(update, "🔢 Ich denke an eine Zahl von 1 bis 10. Rate mit /guess ZAHL!")
         return
 
+    if not context.args[0].isdigit():
+        await reply(update, "Bitte gib eine Zahl von 1 bis 10 ein.")
+        return
+
+    number = int(context.args[0])
+    if chat_id not in games:
+        await reply(update, "Starte zuerst eine Runde mit /guess.")
+        return
+
+    if number == games[chat_id]:
+        del games[chat_id]
+        user = update.effective_user
+        if user:
+            add_reward(chat_id, user.id, user.full_name, xp=15, coins=10)
+        await reply(update, "🎉 Richtig! Du bekommst 15 XP und 10 Coins.")
+    elif 1 <= number <= 10:
+        await reply(update, "❌ Leider falsch. Versuch es nochmal!")
+    else:
+        await reply(update, "Die Zahl muss zwischen 1 und 10 liegen.")
+
+
+QUIZ = [
+    ("Wie viele Tage hat eine Woche?", ["5", "7", "10"], 1),
+    ("Welcher Planet ist als Roter Planet bekannt?", ["Mars", "Venus", "Jupiter"], 0),
+    ("Wie viele Minuten hat eine Stunde?", ["30", "60", "100"], 1),
+    ("Welche Farbe entsteht aus Blau und Gelb?", ["Lila", "Grün", "Orange"], 1),
+]
+
+
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question, options, correct = random.choice(QUIZ)
+    buttons = [
+        [InlineKeyboardButton(option, callback_data=f"quiz_{correct}_{i}")]
+        for i, option in enumerate(options)
+    ]
+    context.application.bot_data["quiz_question"] = question
+    await reply(
+        update,
+        f"🧠 <b>Quizfrage</b>\n{question}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     try:
-        await context.bot.restrict_chat_member(
-            update.effective_chat.id, user_id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=int(time.time() + minutes * 60)
-        )
-        await update.effective_message.reply_text(
-            f"🤫 Nutzer {user_id} für {minutes} Minuten stummgeschaltet."
-        )
-    except Exception:
-        await update.effective_message.reply_text("❌ Stummschalten fehlgeschlagen.")
+        _, correct, chosen = query.data.split("_")
+        if correct == chosen:
+            user = query.from_user
+            chat_id = query.message.chat_id
+            add_reward(chat_id, user.id, user.full_name, xp=10, coins=5)
+            text = "✅ Richtig! +10 XP und +5 Coins!"
+        else:
+            text = "❌ Leider falsch. Versuch es beim nächsten Mal!"
+        await query.edit_message_text(text)
+    except (ValueError, AttributeError):
+        await query.edit_message_text("Diese Quizrunde ist nicht mehr gültig.")
 
 
-async def unmute(update, context):
-    if not await admin_required(update, context):
-        return
-
-    target = target_user(update)
-    user_id = target.id if target else None
-
-    if not user_id and context.args and context.args[0].isdigit():
-        user_id = int(context.args[0])
-
-    if not user_id:
-        await update.effective_message.reply_text(
-            "Antworte mit /unmute oder nutze /unmute USER_ID."
-        )
-        return
-
+async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await context.bot.restrict_chat_member(
-            update.effective_chat.id, user_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_audios=True,
-                can_send_documents=True,
-                can_send_photos=True,
-                can_send_videos=True,
-                can_send_video_notes=True,
-                can_send_voice_notes=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
-        )
-        await update.effective_message.reply_text("🔊 Stummschaltung aufgehoben.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Entstummen fehlgeschlagen.")
-
-
-async def warn(update, context):
-    if not await admin_required(update, context):
+        maximum = int(context.args[0]) if context.args else 100
+        if not 1 <= maximum <= 1_000_000:
+            raise ValueError
+    except ValueError:
+        await reply(update, "Benutze /roll oder /roll 500 (maximal 1.000.000).")
         return
+    await reply(update, f"🎲 Ergebnis: {random.randint(1, maximum)}")
 
-    target = target_user(update)
+
+# ---------------- FUN ----------------
+
+async def joke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jokes = [
+        "Warum können Geister so schlecht lügen? Weil man durch sie hindurchsieht! 👻",
+        "Was macht ein Keks unter einem Baum? Krümel! 🍪",
+        "Treffen sich zwei Fische. Sagt der eine: Hi! Sagt der andere: Wo? 🐟",
+        "Warum nehmen Programmierer immer eine Jacke mit? Wegen der vielen Bugs! 🐛",
+    ]
+    await reply(update, random.choice(jokes))
+
+
+async def ball(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await reply(update, "Stell eine Frage dazu: /8ball Werde ich gewinnen?")
+        return
+    await reply(update, random.choice([
+        "Ja, bestimmt! ✨",
+        "Eher ja! 😎",
+        "Vielleicht 🤔",
+        "Frag später nochmal 🔮",
+        "Heute eher nicht 😅",
+    ]))
+
+
+async def choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    options = [x.strip() for x in text.split("|") if x.strip()]
+    if len(options) < 2:
+        await reply(update, "Beispiel: /choose Pizza | Burger | Nudeln")
+        return
+    await reply(update, f"🤔 Ich wähle: <b>{random.choice(options)}</b>", parse_mode="HTML")
+
+
+async def say(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await reply(update, "Benutze /say Hallo zusammen!")
+        return
+    text = " ".join(context.args)
+    await reply(update, text[:3000])
+
+
+async def user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await reply(
+        update,
+        f"👤 Deine User-ID: <code>{user.id}</code>\n"
+        f"💬 Chat-ID: <code>{chat.id}</code>",
+        parse_mode="HTML",
+    )
+
+
+# ---------------- MODERATION ----------------
+
+async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
     if not target:
-        await update.effective_message.reply_text(
-            "Antworte mit /warn auf eine Nachricht."
+        await reply(update, "Antworte auf eine Nachricht oder nutze /kick USER_ID.")
+        return
+    if target.id == update.effective_user.id:
+        await reply(update, "Du kannst dich nicht selbst kicken.")
+        return
+    try:
+        await context.bot.ban_chat_member(update.effective_chat.id, target.id)
+        await context.bot.unban_chat_member(update.effective_chat.id, target.id)
+        await reply(update, f"👢 {target.full_name} wurde entfernt.")
+    except TelegramError as e:
+        await reply(update, f"❌ Konnte Mitglied nicht entfernen: {e}")
+
+
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
+    if not target:
+        await reply(update, "Antworte auf eine Nachricht oder nutze /ban USER_ID.")
+        return
+    try:
+        await context.bot.ban_chat_member(update.effective_chat.id, target.id)
+        await reply(update, f"🔨 {target.full_name} wurde gesperrt.")
+    except TelegramError as e:
+        await reply(update, f"❌ Sperren fehlgeschlagen: {e}")
+
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    if not context.args or not context.args[0].isdigit():
+        await reply(update, "Benutze /unban USER_ID.")
+        return
+    try:
+        await context.bot.unban_chat_member(
+            update.effective_chat.id,
+            int(context.args[0]),
+            only_if_banned=True,
         )
+        await reply(update, "✅ Sperre aufgehoben, sofern das Mitglied gesperrt war.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
+
+
+def restricted_permissions():
+    return ChatPermissions(
+        can_send_messages=False,
+        can_send_audios=False,
+        can_send_documents=False,
+        can_send_photos=False,
+        can_send_videos=False,
+        can_send_video_notes=False,
+        can_send_voice_notes=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+    )
+
+
+def open_permissions():
+    return ChatPermissions(
+        can_send_messages=True,
+        can_send_audios=True,
+        can_send_documents=True,
+        can_send_photos=True,
+        can_send_videos=True,
+        can_send_video_notes=True,
+        can_send_voice_notes=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+    )
+
+
+async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
+    if not target:
+        await reply(update, "Antworte auf eine Nachricht oder nutze /mute USER_ID.")
+        return
+    try:
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id,
+            target.id,
+            permissions=restricted_permissions(),
+        )
+        await reply(update, f"🔇 {target.full_name} wurde stummgeschaltet.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler beim Stummschalten: {e}")
+
+
+async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
+    if not target:
+        await reply(update, "Antworte auf eine Nachricht oder nutze /unmute USER_ID.")
+        return
+    try:
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id,
+            target.id,
+            permissions=open_permissions(),
+        )
+        await reply(update, f"🔊 {target.full_name} kann wieder schreiben.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler beim Entsperren: {e}")
+
+
+async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
+    if not target:
+        await reply(update, "Antworte auf eine Nachricht oder nutze /warn USER_ID.")
         return
 
     chat_id = update.effective_chat.id
-    count = get_warns(chat_id, target.id) + 1
-    set_warns(chat_id, target.id, count)
+    ensure_user(chat_id, target.id, target.full_name)
+    with sqlite3.connect(DB_FILE) as db:
+        db.execute("""
+            UPDATE users SET warnings = warnings + 1
+            WHERE chat_id = ? AND user_id = ?
+        """, (chat_id, target.id))
+        count = db.execute("""
+            SELECT warnings FROM users WHERE chat_id = ? AND user_id = ?
+        """, (chat_id, target.id)).fetchone()[0]
 
+    await reply(update, f"⚠️ {target.full_name} wurde verwarnt. Verwarnungen: {count}/3")
     if count >= 3:
         try:
             await context.bot.ban_chat_member(chat_id, target.id)
-            await context.bot.unban_chat_member(
-                chat_id, target.id, only_if_banned=True
-            )
-            set_warns(chat_id, target.id, 0)
-            await update.effective_message.reply_text(
-                f"🚨 {target.first_name} hat 3 Verwarnungen erreicht und wurde gekickt."
-            )
-        except Exception:
-            await update.effective_message.reply_text(
-                f"⚠️ {target.first_name}: {count}/3 Verwarnungen. Kicken fehlgeschlagen."
-            )
-    else:
-        await update.effective_message.reply_text(
-            f"⚠️ {target.first_name}: Verwarnung {count}/3."
-        )
+            await reply(update, "🔨 3 Verwarnungen erreicht: Mitglied wurde gesperrt.")
+        except TelegramError:
+            await reply(update, "ℹ️ 3 Verwarnungen erreicht, aber Sperren fehlgeschlagen.")
 
 
-async def warnings(update, context):
-    target = target_user(update) or update.effective_user
-    count = get_warns(update.effective_chat.id, target.id)
-    await update.effective_message.reply_text(
-        f"⚠️ {target.first_name}: {count}/3 Verwarnungen."
-    )
-
-
-async def clearwarns(update, context):
-    if not await admin_required(update, context):
+async def warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update):
         return
+    target = await get_target(update, context)
+    target_id = target.id if target else (
+        update.effective_user.id if update.effective_user else None
+    )
+    if not target_id:
+        return
+    name = target.full_name if target else update.effective_user.full_name
+    _, _, count = get_stats(update.effective_chat.id, target_id, name)
+    await reply(update, f"⚠️ {name} hat {count} Verwarnung(en).")
 
-    target = target_user(update)
+
+async def clearwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    target = await get_target(update, context)
     if not target:
-        await update.effective_message.reply_text(
-            "Antworte mit /clearwarns auf eine Nachricht."
-        )
+        await reply(update, "Antworte auf eine Nachricht oder nutze /clearwarns USER_ID.")
+        return
+    ensure_user(update.effective_chat.id, target.id, target.full_name)
+    with sqlite3.connect(DB_FILE) as db:
+        db.execute("""
+            UPDATE users SET warnings = 0
+            WHERE chat_id = ? AND user_id = ?
+        """, (update.effective_chat.id, target.id))
+    await reply(update, f"✅ Verwarnungen für {target.full_name} zurückgesetzt.")
+
+
+async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
+        return
+    message = update.effective_message
+    if not message or not context.args or not context.args[0].isdigit():
+        await reply(update, "Benutze /purge 10 als Antwort auf eine Nachricht.")
+        return
+    if not message.reply_to_message:
+        await reply(update, "Antworte mit /purge 10 auf die erste zu löschende Nachricht.")
         return
 
-    set_warns(update.effective_chat.id, target.id, 0)
-    await update.effective_message.reply_text("✅ Verwarnungen gelöscht.")
-
-
-async def purge(update, context):
-    if not await admin_required(update, context):
-        return
-
-    if not context.args or not context.args[0].isdigit():
-        await update.effective_message.reply_text("Nutzung: /purge ANZAHL (1–100)")
-        return
-
-    count = max(1, min(100, int(context.args[0])))
-    chat_id = update.effective_chat.id
-    current = update.effective_message.message_id
-    start_id = (
-        update.effective_message.reply_to_message.message_id
-        if update.effective_message.reply_to_message
-        else current - 1
-    )
-
+    amount = min(int(context.args[0]), 100)
+    start_id = message.reply_to_message.message_id
     deleted = 0
-    for message_id in range(start_id, max(0, start_id - count), -1):
+    for message_id in range(start_id, start_id + amount):
         try:
-            await context.bot.delete_message(chat_id, message_id)
+            await context.bot.delete_message(update.effective_chat.id, message_id)
             deleted += 1
-        except Exception:
+        except TelegramError:
             pass
-
     try:
-        await context.bot.delete_message(chat_id, current)
-    except Exception:
+        await context.bot.delete_message(update.effective_chat.id, message.message_id)
+    except TelegramError:
         pass
-
-    notice = await context.bot.send_message(
-        chat_id, f"🧹 {deleted} Nachrichten gelöscht."
-    )
-    await asyncio.sleep(4)
-    try:
-        await context.bot.delete_message(chat_id, notice.message_id)
-    except Exception:
-        pass
+    await reply(update, f"🧹 {deleted} Nachricht(en) gelöscht.")
 
 
-async def pin(update, context):
-    if not await admin_required(update, context):
+async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
         return
-
-    msg = update.effective_message.reply_to_message
-    if not msg:
-        await update.effective_message.reply_text(
-            "Antworte mit /pin auf eine Nachricht."
-        )
+    message = update.effective_message
+    if not message or not message.reply_to_message:
+        await reply(update, "Antworte mit /pin auf die Nachricht, die angeheftet werden soll.")
         return
-
     try:
         await context.bot.pin_chat_message(
-            update.effective_chat.id, msg.message_id
+            update.effective_chat.id,
+            message.reply_to_message.message_id,
         )
-        await update.effective_message.reply_text("📌 Nachricht angeheftet.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Anheften fehlgeschlagen.")
+        await reply(update, "📌 Nachricht angeheftet.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
 
 
-async def unpin(update, context):
-    if not await admin_required(update, context):
+async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
         return
-
     try:
-        msg = update.effective_message.reply_to_message
-        if msg:
-            await context.bot.unpin_chat_message(
-                update.effective_chat.id, msg.message_id
-            )
-        else:
-            await context.bot.unpin_all_chat_messages(update.effective_chat.id)
-        await update.effective_message.reply_text("📌 Anheftung aufgehoben.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Lösen fehlgeschlagen.")
+        await context.bot.unpin_chat_message(update.effective_chat.id)
+        await reply(update, "📌 Anheftung gelöst.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
 
 
-async def lock(update, context):
-    if not await admin_required(update, context):
+async def lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
         return
-
     try:
         await context.bot.set_chat_permissions(
             update.effective_chat.id,
-            ChatPermissions(can_send_messages=False)
+            permissions=restricted_permissions(),
         )
-        await update.effective_message.reply_text("🔒 Gruppe gesperrt.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Sperren fehlgeschlagen.")
+        await reply(update, "🔒 Gruppenchat gesperrt.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
 
 
-async def unlock(update, context):
-    if not await admin_required(update, context):
+async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not group_only(update) or not await admin_required(update, context):
         return
-
     try:
         await context.bot.set_chat_permissions(
             update.effective_chat.id,
-            ChatPermissions(
-                can_send_messages=True,
-                can_send_audios=True,
-                can_send_documents=True,
-                can_send_photos=True,
-                can_send_videos=True,
-                can_send_video_notes=True,
-                can_send_voice_notes=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
+            permissions=open_permissions(),
         )
-        await update.effective_message.reply_text("🔓 Gruppe geöffnet.")
-    except Exception:
-        await update.effective_message.reply_text("❌ Öffnen fehlgeschlagen.")
+        await reply(update, "🔓 Gruppenchat freigegeben.")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
 
 
-async def admins(update, context):
-    if update.effective_chat.type == ChatType.PRIVATE:
-        await update.effective_message.reply_text("Nur in Gruppen verfügbar.")
+async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat:
         return
-
     try:
-        members = await context.bot.get_chat_administrators(
-            update.effective_chat.id
-        )
-        lines = ["🛡️ GRUPPENADMINS"]
+        members = await context.bot.get_chat_administrators(chat.id)
+        lines = ["🛡️ <b>Gruppenadmins</b>"]
         for member in members:
-            lines.append("• " + member.user.full_name)
-        await update.effective_message.reply_text("\n".join(lines))
-    except Exception:
-        await update.effective_message.reply_text("❌ Adminliste nicht verfügbar.")
+            lines.append(f"• {mention(member.user)}")
+        await reply(update, "\n".join(lines), parse_mode="HTML")
+    except TelegramError as e:
+        await reply(update, f"❌ Fehler: {e}")
 
 
-# =============== SPIELE ===============
+# ---------------- HELP / ERRORS ----------------
 
-async def dice(update, context):
-    await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await menu(update, context)
 
 
-async def coin(update, context):
-    await update.effective_message.reply_text(
-        random.choice(["🪙 Kopf!", "🪙 Zahl!"])
-    )
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    error = context.error
+    log.error("Unhandled bot error: %s", error)
 
 
-async def rps(update, context):
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✊ Stein", callback_data="rps_stein"),
-        InlineKeyboardButton("✂️ Schere", callback_data="rps_schere"),
-        InlineKeyboardButton("🖐️ Papier", callback_data="rps_papier")
-    ]])
-    await update.effective_message.reply_text(
-        "✊ Stein, Schere oder Papier?", reply_markup=kb
-    )
-
-
-async def guess(update, context):
-    context.user_data["guess"] = random.randint(1, 20)
-    await update.effective_message.reply_text(
-        "🔢 Ich denke an eine Zahl zwischen 1 und 20. Rate sie!"
-    )
-
-
-async def quiz(update, context):
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("London", callback_data="quiz_london"),
-        InlineKeyboardButton("Paris", callback_data="quiz_paris"),
-        InlineKeyboardButton("Rom", callback_data="quiz_rom")
-    ]])
-    await update.effective_message.reply_text(
-        "🧠 Was ist die Hauptstadt von Frankreich?", reply_markup=kb
-    )
-
-
-async def daily(update, context):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    now = int(time.time())
-
-    with connect_db() as db:
-        row = db.execute(
-            "SELECT daily FROM stats WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id)
-        ).fetchone()
-
-        last = row[0] if row else 0
-
-        if now - last < 86400:
-            hours = (86400 - (now - last)) // 3600
-            await update.effective_message.reply_text(
-                f"⏳ Deine Belohnung ist schon abgeholt. Noch etwa {hours} Stunden."
-            )
-            return
-
-        db.execute("""
-            INSERT INTO stats(chat_id,user_id,xp,coins,daily)
-            VALUES(?,?,0,50,?)
-            ON CONFLICT(chat_id,user_id) DO UPDATE SET
-            coins=coins+50,daily=excluded.daily
-        """, (chat_id, user_id, now))
-
-    await update.effective_message.reply_text("🎁 +50 Coins! Komm morgen wieder.")
-
-
-async def profile(update, context):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    xp, coins, _ = get_stats(chat_id, user.id)
-
-    await update.effective_message.reply_text(
-        f"🏆 PROFIL: {user.first_name}\n\n"
-        f"⭐ Level: {xp // 100 + 1}\n"
-        f"✨ XP: {xp}\n🪙 Coins: {coins}"
-    )
-
-
-async def top(update, context):
-    with connect_db() as db:
-        rows = db.execute(
-            "SELECT user_id,xp FROM stats WHERE chat_id=? "
-            "ORDER BY xp DESC LIMIT 10",
-            (update.effective_chat.id,)
-        ).fetchall()
-
-    if not rows:
-        await update.effective_message.reply_text("Noch keine Rangliste!")
-        return
-
-    lines = ["🏆 TOP 10"]
-    for i, row in enumerate(rows, 1):
-        lines.append(f"{i}. User {row[0]} — Level {row[1] // 100 + 1} ({row[1]} XP)")
-
-    await update.effective_message.reply_text("\n".join(lines))
-
-
-# =============== FUN ===============
-
-async def joke(update, context):
-    jokes = [
-        "Warum können Geister so schlecht lügen? Man sieht durch sie hindurch! 👻",
-        "Was macht ein Keks unter einem Baum? Krümel! 🍪",
-        "Was ist orange und wandert? Eine Wanderine! 🍊",
-        "Warum ging der Computer zum Arzt? Er hatte einen Virus! 💻"
-    ]
-    await update.effective_message.reply_text(random.choice(jokes))
-
-
-async def eightball(update, context):
-    if not context.args:
-        await update.effective_message.reply_text(
-            "Nutzung: /8ball Werde ich heute Glück haben?"
-        )
-        return
-
-    await update.effective_message.reply_text(
-        "🔮 " + random.choice([
-            "Ja, auf jeden Fall!", "Sieht gut aus!", "Vielleicht.",
-            "Eher nicht.", "Frag später nochmal!"
-        ])
-    )
-
-
-async def choose(update, context):
-    options = " ".join(context.args).split("|")
-    options = [x.strip() for x in options if x.strip()]
-
-    if len(options) < 2:
-        await update.effective_message.reply_text(
-            "Nutzung: /choose Pizza | Burger"
-        )
-        return
-
-    await update.effective_message.reply_text(
-        "🎯 Meine Wahl: " + random.choice(options)
-    )
-
-
-async def roll(update, context):
-    await update.effective_message.reply_text(
-        f"🎲 Deine Zufallszahl: {random.randint(1, 100)}"
-    )
-
-
-async def hug(update, context):
-    await update.effective_message.reply_text(
-        "🤗 Eine freundliche virtuelle Umarmung!"
-    )
-
-
-async def info(update, context):
-    chat = update.effective_chat
-    user = update.effective_user
-    text = (
-        f"👤 Name: {user.full_name}\n"
-        f"🆔 User-ID: {user.id}\n"
-        f"💬 Chat-Typ: {chat.type}\n"
-        f"🆔 Chat-ID: {chat.id}"
-    )
-    if chat.type != ChatType.PRIVATE:
-        text += f"\n👥 Gruppe: {chat.title}"
-
-    await update.effective_message.reply_text(text)
-
-
-async def id_command(update, context):
-    target = target_user(update) or update.effective_user
-    await update.effective_message.reply_text(
-        f"🆔 User-ID: {target.id}\n"
-        f"Chat-ID: {update.effective_chat.id}"
-    )
-
-
-async def say(update, context):
-    if update.effective_chat.type != ChatType.PRIVATE:
-        if not await admin_required(update, context):
-            return
-
-    if not context.args:
-        await update.effective_message.reply_text("Nutzung: /say Dein Text")
-        return
-
-    await context.bot.send_message(
-        update.effective_chat.id, " ".join(context.args)
-    )
-
-
-# =============== NACHRICHTEN / XP ===============
-
-async def text_handler(update, context):
-    msg = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-
-    if not msg or not user or user.is_bot:
-        return
-
-    if msg.text and "guess" in context.user_data and msg.text.isdigit():
-        number = int(msg.text)
-        answer = context.user_data["guess"]
-
-        if number == answer:
-            del context.user_data["guess"]
-            change_stats(chat.id, user.id, coins=10)
-            await msg.reply_text("🎉 Richtig! +10 Coins!")
-        elif 1 <= number <= 20:
-            await msg.reply_text("⬆️ Höher!" if number < answer else "⬇️ Tiefer!")
-        else:
-            await msg.reply_text("Bitte eine Zahl von 1 bis 20 eingeben.")
-        return
-
-    if chat.type == ChatType.PRIVATE:
-        await msg.reply_text("🤖 Tippe /menu, um das Hauptmenü zu öffnen.")
-        return
-
-    if msg.text and not msg.text.startswith("/"):
-        if random.random() < 0.35:
-            change_stats(chat.id, user.id, xp=random.randint(1, 3))
-
-
-# =============== RENDER HEALTH CHECK ===============
-
-def run_health_server():
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"LOL Studios Bot is alive")
-
-        def log_message(self, *args):
-            pass
-
-    port = int(os.getenv("PORT", "10000"))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
-
-# =============== START ===============
+# ---------------- STARTUP ----------------
 
 def main():
     if not TOKEN:
         raise RuntimeError(
-            "BOT_TOKEN fehlt! Trage den Token in Render unter Environment ein."
+            "BOT_TOKEN fehlt. Render > Service > Environment: "
+            "Variable BOT_TOKEN mit deinem BotFather-Token anlegen."
         )
 
     init_db()
-    threading.Thread(target=run_health_server, daemon=True).start()
+    start_health_server()
 
     app = Application.builder().token(TOKEN).build()
 
-    handlers = {
+    commands = {
         "start": start,
         "menu": menu,
+        "help": help_command,
+        "profile": profile,
+        "daily": daily,
+        "top": top,
+        "dice": dice,
+        "coin": coin,
+        "rps": rps,
+        "guess": guess,
+        "quiz": quiz,
+        "roll": roll,
+        "joke": joke,
+        "8ball": ball,
+        "choose": choose,
+        "say": say,
+        "id": user_id,
         "kick": kick,
         "ban": ban,
         "unban": unban,
@@ -891,34 +873,29 @@ def main():
         "lock": lock,
         "unlock": unlock,
         "admins": admins,
-        "dice": dice,
-        "coin": coin,
-        "rps": rps,
-        "guess": guess,
-        "quiz": quiz,
-        "daily": daily,
-        "profile": profile,
-        "top": top,
-        "joke": joke,
-        "8ball": eightball,
-        "choose": choose,
-        "roll": roll,
-        "hug": hug,
-        "info": info,
-        "id": id_command,
-        "say": say
     }
 
-    for name, callback in handlers.items():
-        app.add_handler(CommandHandler(name, callback))
+    for name, handler in commands.items():
+        app.add_handler(CommandHandler(name, handler))
 
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
-    )
+    app.add_handler(CallbackQueryHandler(quiz_callback, pattern=r"^quiz_"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu_"))
+    app.add_error_handler(error_handler)
 
-    print("LOL Studios Manager Bot gestartet!")
-    app.run_polling(drop_pending_updates=True)
+    log.info("Starting LOL Studios Manager...")
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except InvalidToken:
+        log.critical(
+            "Telegram lehnt BOT_TOKEN ab. Prüfe den Token in Render "
+            "Environment und ob er von BotFather stammt."
+        )
+        raise
+    except (NetworkError, TimedOut):
+        log.exception(
+            "Telegram ist nicht erreichbar. Prüfe Netzwerk und versuche es erneut."
+        )
+        raise
 
 
 if __name__ == "__main__":
