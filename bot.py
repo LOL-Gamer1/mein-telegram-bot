@@ -1,5 +1,6 @@
 
 # bot.py — LOL Studios Manager
+
 import os
 import logging
 
@@ -27,34 +28,56 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
+
 logger = logging.getLogger("LOLStudiosManager")
 
 
 async def start_command(update: Update, context):
     user = update.effective_user
+
     if not user:
         return
 
-    await update.effective_message.reply_text(
-        f"👋 Moin {user.first_name}!\n\n"
-        "Willkommen beim LOL Studios Manager 🚀\n\n"
-        "📝 /register – Konto erstellen\n"
-        "👤 /profile – Dein Profil\n"
-        "🎮 /menu – Interaktives Hauptmenü\n"
-        "❓ /help – Alle Commands\n\n"
-        "Registriere dich, um die Funktionen zu nutzen."
-    )
+    # Prüfen, ob das Konto bereits in MySQL existiert.
+    account = database.get_account(user.id)
+
+    if account:
+        name = account.get("name") or user.first_name
+
+        text = (
+            f"👋 Moin {name}!\n\n"
+            "Willkommen zurück beim LOL Studios Manager 🚀\n\n"
+            "👤 /profile – Dein Profil\n"
+            "🎮 /menu – Interaktives Hauptmenü\n"
+            "🎁 /daily – Tägliche Belohnung\n"
+            "❓ /help – Alle Commands\n\n"
+            "Viel Spaß!"
+        )
+    else:
+        text = (
+            f"👋 Moin {user.first_name}!\n\n"
+            "Willkommen beim LOL Studios Manager 🚀\n\n"
+            "📝 /register – Konto erstellen\n"
+            "👤 /profile – Dein Profil\n"
+            "🎮 /menu – Interaktives Hauptmenü\n"
+            "❓ /help – Alle Commands\n\n"
+            "Registriere dich mit /register, "
+            "um alle Funktionen nutzen zu können."
+        )
+
+    await update.effective_message.reply_text(text)
 
 
 async def myid_command(update: Update, context):
     user = update.effective_user
+
     if not user:
         return
 
     await update.effective_message.reply_text(
         f"🆔 Deine Telegram-ID:\n{user.id}\n\n"
-        "Trage diese Zahl als OWNER_ID in config.py ein, "
-        "wenn du der Bot-Owner bist."
+        "Wenn du der Bot-Owner bist, muss diese Zahl "
+        "als OWNER_ID in config.py eingetragen sein."
     )
 
 
@@ -85,36 +108,33 @@ def main():
         .build()
     )
 
-    # Registrierungspflicht vor den anderen Handlern.
+    # Registrierungssperre vor den normalen Commands.
     application.add_handler(
         TypeHandler(Update, registration_gate),
         group=-1,
     )
 
-    # Registrierung und Profil beibehalten.
     application.add_handler(
         build_registration_handler(),
         group=0,
     )
+
     application.add_handler(
         CommandHandler("profile", profile_command),
         group=0,
     )
 
-    # Öffentliche Basis-Commands.
     application.add_handler(
         CommandHandler("start", start_command),
         group=1,
     )
+
     application.add_handler(
         CommandHandler("myid", myid_command),
         group=1,
     )
 
-    # Neues Menü und sämtliche zusätzlichen Commands.
     register_feature_handlers(application)
-
-    # Vorhandenes Owner-Admin-Panel beibehalten.
     register_admin_handlers(application)
 
     application.add_error_handler(error_handler)
