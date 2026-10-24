@@ -2,6 +2,7 @@
 # database.py
 import os
 from contextlib import contextmanager
+
 import mysql.connector
 
 
@@ -12,6 +13,7 @@ def mysql_config():
         "MYSQL_USER",
         "MYSQL_PASSWORD",
     ]
+
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         raise RuntimeError(
@@ -44,6 +46,7 @@ def connect():
 def init_db():
     with connect() as db:
         cur = db.cursor()
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 user_id BIGINT PRIMARY KEY,
@@ -56,12 +59,14 @@ def init_db():
                 suspended TINYINT NOT NULL DEFAULT 0
             )
         """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS points (
                 user_id BIGINT PRIMARY KEY,
                 amount BIGINT NOT NULL DEFAULT 0
             )
         """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_claims (
                 user_id BIGINT NOT NULL,
@@ -69,6 +74,7 @@ def init_db():
                 PRIMARY KEY (user_id, claim_date)
             )
         """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS reports (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -77,10 +83,10 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        cur.execute("""
-            CREATE INDEX idx_accounts_name
-            ON accounts (name)
-        """)
+
+        # Kein CREATE INDEX hier:
+        # idx_accounts_name kann bereits vorhanden sein.
+
         cur.close()
 
 
@@ -89,11 +95,11 @@ def get_account(user_id):
         cur = db.cursor(dictionary=True)
         cur.execute(
             "SELECT * FROM accounts WHERE user_id = %s",
-            (int(user_id),)
+            (int(user_id),),
         )
-        row = cur.fetchone()
+        result = cur.fetchone()
         cur.close()
-        return row
+        return result
 
 
 def is_registered(user_id):
@@ -106,7 +112,12 @@ def is_suspended(user_id):
 
 
 def save_account(
-    user_id, username="", name="", bio="", avatar="", agegroup=""
+    user_id,
+    username="",
+    name="",
+    bio="",
+    avatar="",
+    agegroup="",
 ):
     with connect() as db:
         cur = db.cursor()
@@ -121,8 +132,12 @@ def save_account(
                 avatar = VALUES(avatar),
                 agegroup = VALUES(agegroup)
         """, (
-            int(user_id), username or "", name or "",
-            bio or "", avatar or "", agegroup or ""
+            int(user_id),
+            username or "",
+            name or "",
+            bio or "",
+            avatar or "",
+            agegroup or "",
         ))
         cur.close()
 
@@ -132,7 +147,7 @@ def set_suspended(user_id, suspended=True):
         cur = db.cursor()
         cur.execute(
             "UPDATE accounts SET suspended=%s WHERE user_id=%s",
-            (int(bool(suspended)), int(user_id))
+            (int(bool(suspended)), int(user_id)),
         )
         changed = cur.rowcount > 0
         cur.close()
@@ -190,7 +205,7 @@ def get_points(user_id):
         cur = db.cursor()
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
-            (int(user_id),)
+            (int(user_id),),
         )
         row = cur.fetchone()
         cur.close()
@@ -198,16 +213,19 @@ def get_points(user_id):
 
 
 def add_points(user_id, amount):
+    amount = int(amount)
+
     with connect() as db:
         cur = db.cursor()
         cur.execute("""
             INSERT INTO points (user_id, amount)
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE amount = amount + %s
-        """, (int(user_id), int(amount), int(amount)))
+        """, (int(user_id), amount, amount))
+
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
-            (int(user_id),)
+            (int(user_id),),
         )
         result = cur.fetchone()[0]
         cur.close()
@@ -221,9 +239,10 @@ def claim_daily(user_id, amount=100):
 
     with connect() as db:
         cur = db.cursor()
+
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
-            (int(user_id),)
+            (int(user_id),),
         )
         row = cur.fetchone()
         current = row[0] if row else 0
@@ -237,14 +256,16 @@ def claim_daily(user_id, amount=100):
             cur.close()
             return False, current
 
+        amount = int(amount)
         cur.execute("""
             INSERT INTO points (user_id, amount)
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE amount = amount + %s
-        """, (int(user_id), int(amount), int(amount)))
+        """, (int(user_id), amount, amount))
+
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
-            (int(user_id),)
+            (int(user_id),),
         )
         total = cur.fetchone()[0]
         cur.close()
