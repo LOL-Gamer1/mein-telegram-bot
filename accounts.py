@@ -1,10 +1,7 @@
+
 # accounts.py
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
     CommandHandler,
@@ -25,6 +22,12 @@ async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return ConversationHandler.END
 
+    if database.is_registered(user.id):
+        await update.effective_message.reply_text(
+            "Du bist bereits registriert! Nutze /me für dein Profil."
+        )
+        return ConversationHandler.END
+
     context.user_data["registration_active"] = True
     context.user_data["registration"] = {
         "name": "",
@@ -34,9 +37,9 @@ async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     await update.effective_message.reply_text(
-        "👋 Willkommen bei der Registrierung des LOL Studios Manager!\n\n"
-        "Schritt 1 von 4: Wie möchtest du im Bot heißen?\n"
-        "Bitte gib einen Namen mit 2–40 Zeichen ein."
+        "🌩️ LOL Studios Manager – Registrierung\n\n"
+        "Schritt 1/4: Wie möchtest du im Bot heißen?\n"
+        "Gib einen Namen mit 2–40 Zeichen ein."
     )
     return NAME
 
@@ -46,7 +49,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not 2 <= len(name) <= 40:
         await update.effective_message.reply_text(
-            "Bitte gib einen Namen mit 2–40 Zeichen ein."
+            "Der Name muss zwischen 2 und 40 Zeichen lang sein."
         )
         return NAME
 
@@ -61,33 +64,25 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.effective_message.reply_text(
-        "Schritt 2 von 4: Wähle deine Altersgruppe.",
+        "Schritt 2/4: Wähle deine Altersgruppe.",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
     return AGEGROUP
 
 
-async def get_agegroup(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def get_agegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data or ""
-    if not data.startswith("reg:age:"):
-        return AGEGROUP
-
-    value = data.split(":", 2)[2]
+    value = (query.data or "").split(":", 2)[-1]
     allowed = {age_value for _, age_value in AGE_GROUPS}
 
     context.user_data["registration"]["agegroup"] = (
-        "" if value == "skip" else value if value in allowed else ""
+        value if value in allowed else ""
     )
 
     await query.edit_message_text(
-        "Schritt 3 von 4: Schreibe eine kurze Bio über dich.\n"
-        "Du kannst auch /skip senden."
+        "Schritt 3/4: Schreibe eine kurze Bio oder sende /skip."
     )
     return BIO
 
@@ -97,28 +92,23 @@ async def get_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(bio) > 250:
         await update.effective_message.reply_text(
-            "Die Bio darf maximal 250 Zeichen lang sein. "
-            "Bitte kürze sie oder sende /skip."
+            "Deine Bio darf höchstens 250 Zeichen enthalten."
         )
         return BIO
 
     context.user_data["registration"]["bio"] = bio
-    await ask_for_avatar(update, context)
+    await update.effective_message.reply_text(
+        "Schritt 4/4: Sende ein Foto als Avatar oder nutze /skip."
+    )
     return AVATAR
 
 
 async def skip_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["registration"]["bio"] = ""
-    await ask_for_avatar(update, context)
-    return AVATAR
-
-
-async def ask_for_avatar(update, context):
     await update.effective_message.reply_text(
-        "Schritt 4 von 4: Sende ein Foto als Avatar.\n"
-        "Das Foto wird als Telegram-Datei-ID gespeichert. "
-        "Alternativ kannst du /skip senden."
+        "Schritt 4/4: Sende ein Foto als Avatar oder nutze /skip."
     )
+    return AVATAR
 
 
 async def get_avatar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,22 +130,9 @@ async def skip_avatar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def skip_not_allowed(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    await update.effective_message.reply_text(
-        "Diesen Schritt kannst du nicht überspringen. "
-        "Bitte beantworte die aktuelle Frage oder nutze /cancel."
-    )
-    return ConversationHandler.END if False else context.user_data.get(
-        "registration_state", NAME
-    )
-
-
 async def finish_registration(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
     form = context.user_data.get("registration", {})
@@ -173,30 +150,24 @@ async def finish_registration(
     context.user_data.pop("registration", None)
 
     await update.effective_message.reply_text(
-        "✅ **Registrierung abgeschlossen!**\n\n"
-        "Du kannst jetzt die Commands des LOL Studios Manager verwenden.\n"
-        "Öffne /menu, um die verfügbaren Funktionen zu sehen.",
-        parse_mode="Markdown",
+        "✅ Registrierung abgeschlossen!\n\n"
+        "Dein Profil ist eingerichtet. Öffne /menu für alle Funktionen."
     )
 
 
 async def cancel_registration(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     context.user_data["registration_active"] = False
     context.user_data.pop("registration", None)
-
     await update.effective_message.reply_text(
-        "Registrierung abgebrochen. Du kannst jederzeit wieder /register nutzen."
+        "Registrierung abgebrochen. Du kannst es mit /register erneut versuchen."
     )
     return ConversationHandler.END
 
 
-async def profile_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     account = database.get_account(user.id)
 
@@ -207,26 +178,24 @@ async def profile_command(
         return
 
     username = (
-        f"@{account['username']}" if account["username"] else "Nicht gesetzt"
+        f"@{account['username']}" if account.get("username")
+        else "Nicht gesetzt"
     )
-    agegroup = account["agegroup"] or "Nicht angegeben"
-    bio = account["bio"] or "Keine Bio"
 
-    caption = (
-        f"👤 Profil: {account['name']}\n"
+    text = (
+        f"👤 Profil: {account.get('name') or user.first_name}\n"
         f"🆔 Telegram-ID: {account['user_id']}\n"
         f"🔗 Username: {username}\n"
-        f"🎂 Altersgruppe: {agegroup}\n"
-        f"📝 Bio: {bio}"
+        f"🎂 Altersgruppe: {account.get('agegroup') or 'Nicht angegeben'}\n"
+        f"📝 Bio: {account.get('bio') or 'Keine Bio'}\n"
+        f"⭐ Punkte: {database.get_points(user.id)}"
     )
 
-    if account["avatar"]:
-        await update.effective_message.reply_photo(
-            photo=account["avatar"],
-            caption=caption,
-        )
+    avatar = account.get("avatar")
+    if avatar:
+        await update.effective_message.reply_photo(photo=avatar, caption=text)
     else:
-        await update.effective_message.reply_text(caption)
+        await update.effective_message.reply_text(text)
 
 
 def build_registration_handler():
@@ -248,9 +217,7 @@ def build_registration_handler():
                 MessageHandler(filters.PHOTO, get_avatar),
             ],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel_registration),
-        ],
+        fallbacks=[CommandHandler("cancel", cancel_registration)],
         allow_reentry=True,
         name="registration",
         persistent=False,
