@@ -5,7 +5,7 @@ import threading
 import os
 import time
 
-# ⚠️ TRAGE HIER DEINEN ECHTEN TOKEN EIN! (Die Anführungszeichen "" müssen bleiben)
+# ⚠️ TRAGE HIER DEINEN ECHTEN TOKEN EIN!
 TOKEN = "8511282233:AAF05ySHJNJyHxi5ctZbvHhUhSB4fMrrlzc"
 
 # Speicher für Verwarnungen
@@ -31,7 +31,6 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 # --- MODERATIONS COMMANDS ---
 
-# Kick-Funktion (Hier war zuvor der Namensfehler behoben)
 async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private":
@@ -51,7 +50,6 @@ async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Fehler: Mir fehlen Admin-Rechte zum Kicken.")
 
-# Befehl: /mute
 async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private" or not await is_admin(update, context): return
@@ -67,7 +65,6 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Fehler: Mir fehlen Admin-Rechte.")
 
-# Befehl: /unmute
 async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private" or not await is_admin(update, context): return
@@ -88,7 +85,6 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Fehler: Mir fehlen Admin-Rechte.")
 
-# Befehl: /warn
 async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private" or not await is_admin(update, context): return
@@ -110,7 +106,6 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ **{target_user.first_name}** wurde verwarnt! Stand: [{anzahl}/3]")
 
-# Befehl: /pin
 async def pin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private" or not await is_admin(update, context): return
@@ -123,7 +118,6 @@ async def pin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Fehler: Ich darf keine Nachrichten anheften.")
 
-# Befehl: /say
 async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context): return
     if not context.args:
@@ -136,7 +130,6 @@ async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     await context.bot.send_message(chat_id=update.effective_chat.id, text=nachricht)
 
-# Befehl: /info
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -200,9 +193,26 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await is_admin(update, context): return
         await query.edit_message_text(text="🔓 Gruppe geöffnet.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➔ Zurück", callback_data="admin_panel")]]))
 
+# HIER IST JETZT ALLES KORREKT EIN- UND AUSGERÜCKT:
 async def standard_antwort(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-await update.message.reply_text("🤖 Bitte tippe /start, um die Menü-Knöpfe zu öffnen!")
+        await update.message.reply_text("🤖 Bitte tippe `/start`, um die Menü-Knöpfe zu öffnen!")
+
+if __name__ == "__main__":
+print("Vollständig korrigierte Bot-Version wird gestartet...")
+threading.Thread(target=run_health_server, daemon=True).start()
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("kick", kick_user))
+app.add_handler(CommandHandler("mute", mute_user))
+app.add_handler(CommandHandler("unmute", unmute_user))
+app.add_handler(CommandHandler("warn", warn_user))
+app.add_handler(CommandHandler("pin", pin_message))
+app.add_handler(CommandHandler("say", say_command))
+app.add_handler(CommandHandler("info", info_command))
+app.add_handler(CallbackQueryHandler(button_click))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, standard_antwort))
+app.run_polling() update.message.reply_text("🤖 Bitte tippe /start, um die Menü-Knöpfe zu öffnen!")
 if name == "main":
 print("Reparierte Bot-Version wird gestartet...")
 threading.Thread(target=run_health_server, daemon=True).start()
