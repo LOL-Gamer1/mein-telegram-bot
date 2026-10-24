@@ -1,5 +1,6 @@
 
-# features.py — LOL Studios Manager
+# features.py — LOL Studios Manager (MySQL-Version)
+
 import random
 from datetime import datetime, timezone
 
@@ -38,6 +39,12 @@ def main_keyboard():
     ])
 
 
+def back_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
+    ]])
+
+
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🚀 LOL STUDIOS MANAGER\n\nWähle eine Funktion:",
@@ -48,8 +55,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     user_id = query.from_user.id
-    data = query.data
+    data = query.data or ""
 
     if data == "menu:home":
         await query.edit_message_text(
@@ -59,20 +67,25 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "menu:profile":
         account = database.get_account(user_id)
+
         if not account:
-            await query.edit_message_text("Bitte registriere dich zuerst mit /register.")
+            await query.edit_message_text(
+                "🔒 Dein Konto wurde nicht gefunden.\n"
+                "Bitte nutze /register.",
+                reply_markup=back_keyboard(),
+            )
             return
 
         await query.edit_message_text(
-            f"👤 DEIN PROFIL\n\n"
-            f"Name: {account['name']}\n"
-            f"Bio: {account['bio'] or 'Noch keine Bio'}\n"
-            f"Altersgruppe: {account['agegroup'] or 'Nicht angegeben'}\n"
+            "👤 DEIN PROFIL\n\n"
+            f"Name: {account.get('name') or 'Nicht angegeben'}\n"
+            f"Bio: {account.get('bio') or 'Noch keine Bio'}\n"
+            f"Altersgruppe: {account.get('agegroup') or 'Nicht angegeben'}\n"
             f"ID: {user_id}\n\n"
-            "Bearbeiten: /setname NeuerName oder /setbio Deine Bio",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            "Bearbeiten:\n"
+            "/setname Neuer Name\n"
+            "/setbio Deine Bio",
+            reply_markup=back_keyboard(),
         )
 
     elif data == "menu:games":
@@ -80,27 +93,22 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎮 MINI-SPIELE\n\n"
             "🎲 /roll – Zufallszahl würfeln\n"
             "🪙 /coinflip – Münzwurf\n"
-            "🔢 /guess – Zahl erraten (Ziehung starten)\n\n"
+            "🔢 /guess – Zahl erraten\n\n"
             "Viel Spaß!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            reply_markup=back_keyboard(),
         )
 
     elif data == "menu:daily":
         await query.edit_message_text(
-            "🎁 TÄGLICHE BELOHNUNG\n\nNutze /daily, um deine Belohnung abzuholen.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            "🎁 TÄGLICHE BELOHNUNG\n\n"
+            "Nutze /daily, um deine Belohnung abzuholen.",
+            reply_markup=back_keyboard(),
         )
 
     elif data == "menu:leaderboard":
         await query.edit_message_text(
             leaderboard_text(),
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            reply_markup=back_keyboard(),
         )
 
     elif data == "menu:rules":
@@ -110,9 +118,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2. Kein Spam oder Missbrauch.\n"
             "3. Melde Probleme mit /report.\n"
             "4. Versuche nicht, andere Accounts zu umgehen.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            reply_markup=back_keyboard(),
         )
 
     elif data == "menu:about":
@@ -120,9 +126,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ℹ️ LOL STUDIOS MANAGER\n\n"
             "Ein Community-Bot von LOL Studios mit Profilen, "
             "Minispielen und Belohnungen.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-            ]]),
+            reply_markup=back_keyboard(),
         )
 
 
@@ -138,15 +142,19 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "📜 Regeln:\n1. Respektvoll bleiben.\n"
-        "2. Nicht spammen.\n3. Probleme mit /report melden."
+        "📜 Regeln:\n"
+        "1. Respektvoll bleiben.\n"
+        "2. Nicht spammen.\n"
+        "3. Probleme mit /report melden."
     )
 
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        f"🆔 Deine Telegram-ID: {update.effective_user.id}"
-    )
+    user = update.effective_user
+    if user:
+        await update.effective_message.reply_text(
+            f"🆔 Deine Telegram-ID: {user.id}"
+        )
 
 
 async def roll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,6 +172,7 @@ async def coinflip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     number = random.randint(1, 10)
     context.user_data["guess_number"] = number
+
     await update.effective_message.reply_text(
         "🔢 Ich habe eine Zahl zwischen 1 und 10 gewählt. "
         "Rate mit /guess Zahl, zum Beispiel /guess 5."
@@ -172,18 +181,29 @@ async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def guess_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = context.user_data.get("guess_number")
+
     if target is None:
         await guess_command(update, context)
         return
 
     if not context.args:
-        await update.effective_message.reply_text("Nutze /guess Zahl, zum Beispiel /guess 5.")
+        await update.effective_message.reply_text(
+            "Nutze /guess Zahl, zum Beispiel /guess 5."
+        )
         return
 
     try:
         number = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("Bitte gib eine Zahl von 1 bis 10 ein.")
+        await update.effective_message.reply_text(
+            "Bitte gib eine Zahl von 1 bis 10 ein."
+        )
+        return
+
+    if not 1 <= number <= 10:
+        await update.effective_message.reply_text(
+            "Bitte wähle eine Zahl zwischen 1 und 10."
+        )
         return
 
     if number == target:
@@ -197,59 +217,68 @@ async def guess_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def leaderboard_text():
     with database.connect() as db:
-        rows = db.execute("""
-            SELECT a.name, p.balance
-            FROM accounts a
-            LEFT JOIN points p ON p.user_id = a.user_id
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            SELECT
+                a.name,
+                a.username,
+                p.amount
+            FROM accounts AS a
+            LEFT JOIN points AS p ON p.user_id = a.user_id
             WHERE a.suspended = 0
-            ORDER BY COALESCE(p.balance, 0) DESC, a.name COLLATE NOCASE
+            ORDER BY COALESCE(p.amount, 0) DESC, a.name ASC
             LIMIT 10
-        """).fetchall()
+        """)
+        rows = cur.fetchall()
+        cur.close()
 
     if not rows:
         return "🏆 Noch gibt es keine Einträge."
 
     lines = ["🏆 RANGLISTE\n"]
+
     for index, row in enumerate(rows, 1):
-        lines.append(f"{index}. {row['name']} — {row['balance'] or 0} Punkte")
+        name = row.get("name") or row.get("username") or "Unbekannt"
+        amount = row.get("amount") or 0
+        lines.append(f"{index}. {name} — {amount} Punkte")
+
     return "\n".join(lines)
 
 
-async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def leaderboard_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     await update.effective_message.reply_text(leaderboard_text())
 
 
 async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    today = datetime.now(timezone.utc).date().isoformat()
+    user = update.effective_user
+    if not user:
+        return
 
-    with database.connect() as db:
-        row = db.execute(
-            "SELECT last_claim FROM daily_claims WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()
+    success, total = database.claim_daily(user.id, 100)
 
-        if row and row["last_claim"] == today:
-            await update.effective_message.reply_text(
-                "⏳ Du hast deine tägliche Belohnung heute bereits abgeholt."
-            )
-            return
-
-        db.execute("""
-            INSERT INTO points(user_id, balance) VALUES (?, 100)
-            ON CONFLICT(user_id) DO UPDATE SET balance = balance + 100
-        """, (user_id,))
-        db.execute("""
-            INSERT INTO daily_claims(user_id, last_claim) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET last_claim = excluded.last_claim
-        """, (user_id, today))
+    if not success:
+        await update.effective_message.reply_text(
+            "⏳ Du hast deine tägliche Belohnung heute bereits abgeholt.\n"
+            f"💰 Deine Punkte: {total}"
+        )
+        return
 
     await update.effective_message.reply_text(
-        "🎁 Daily abgeholt! Du bekommst 100 Punkte."
+        "🎁 Daily abgeholt!\n"
+        "Du bekommst 100 Punkte.\n"
+        f"💰 Dein Punktestand: {total}"
     )
 
 
-async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def setname_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    user = update.effective_user
+    if not user:
+        return
+
     if not context.args:
         await update.effective_message.reply_text(
             "Verwendung: /setname Neuer Name"
@@ -257,60 +286,92 @@ async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     name = " ".join(context.args).strip()
+
     if len(name) > 50:
-        await update.effective_message.reply_text("Der Name darf höchstens 50 Zeichen haben.")
+        await update.effective_message.reply_text(
+            "Der Name darf höchstens 50 Zeichen haben."
+        )
         return
 
     with database.connect() as db:
-        result = db.execute(
-            "UPDATE accounts SET name = ? WHERE user_id = ?",
-            (name, update.effective_user.id),
+        cur = db.cursor()
+        cur.execute(
+            "UPDATE accounts SET name = %s WHERE user_id = %s",
+            (name, user.id),
+        )
+        changed = cur.rowcount > 0
+        cur.close()
+
+    if changed:
+        await update.effective_message.reply_text(
+            f"✅ Dein Name ist jetzt: {name}"
+        )
+    else:
+        await update.effective_message.reply_text(
+            "Bitte registriere dich zuerst mit /register."
         )
 
-    if result.rowcount:
-        await update.effective_message.reply_text(f"✅ Dein Name ist jetzt: {name}")
-    else:
-        await update.effective_message.reply_text("Bitte registriere dich zuerst mit /register.")
 
+async def setbio_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    user = update.effective_user
+    if not user:
+        return
 
-async def setbio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bio = " ".join(context.args).strip()
+
     if not bio:
-        await update.effective_message.reply_text("Verwendung: /setbio Das ist meine Bio")
+        await update.effective_message.reply_text(
+            "Verwendung: /setbio Das ist meine Bio"
+        )
         return
+
     if len(bio) > 200:
-        await update.effective_message.reply_text("Die Bio darf höchstens 200 Zeichen haben.")
+        await update.effective_message.reply_text(
+            "Die Bio darf höchstens 200 Zeichen haben."
+        )
         return
 
     with database.connect() as db:
-        result = db.execute(
-            "UPDATE accounts SET bio = ? WHERE user_id = ?",
-            (bio, update.effective_user.id),
+        cur = db.cursor()
+        cur.execute(
+            "UPDATE accounts SET bio = %s WHERE user_id = %s",
+            (bio, user.id),
         )
+        changed = cur.rowcount > 0
+        cur.close()
 
-    if result.rowcount:
-        await update.effective_message.reply_text("✅ Deine Bio wurde aktualisiert.")
+    if changed:
+        await update.effective_message.reply_text(
+            "✅ Deine Bio wurde aktualisiert."
+        )
     else:
-        await update.effective_message.reply_text("Bitte registriere dich zuerst mit /register.")
+        await update.effective_message.reply_text(
+            "Bitte registriere dich zuerst mit /register."
+        )
 
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+
     message = " ".join(context.args).strip()
+
     if not message:
         await update.effective_message.reply_text(
             "Verwendung: /report Beschreibe das Problem"
         )
         return
+
     if len(message) > 1000:
-        await update.effective_message.reply_text("Die Meldung darf höchstens 1000 Zeichen haben.")
+        await update.effective_message.reply_text(
+            "Die Meldung darf höchstens 1000 Zeichen haben."
+        )
         return
 
-    with database.connect() as db:
-        cursor = db.execute(
-            "INSERT INTO reports(user_id, message) VALUES (?, ?)",
-            (update.effective_user.id, message),
-        )
-        report_id = cursor.lastrowid
+    report_id = database.create_report(user.id, message)
 
     await update.effective_message.reply_text(
         f"✅ Meldung #{report_id} wurde gespeichert. Danke!"
@@ -319,8 +380,10 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(
             chat_id=OWNER_ID,
-            text=f"📩 Neue Meldung #{report_id}\n"
-                 f"Von: {update.effective_user.id}\n\n{message}",
+            text=(
+                f"📩 Neue Meldung #{report_id}\n"
+                f"Von: {user.id}\n\n{message}"
+            ),
         )
     except Exception:
         pass
@@ -358,13 +421,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "🎮 Spiele:\n/roll – Würfeln\n/coinflip – Münzwurf\n/guess – Zahl erraten"
+        "🎮 Spiele:\n"
+        "/roll – Würfeln\n"
+        "/coinflip – Münzwurf\n"
+        "/guess – Zahl erraten"
     )
 
 
 def register_feature_handlers(application: Application):
-    application.add_handler(CommandHandler("menu", menu_command), group=1)
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"), group=1)
+    application.add_handler(
+        CommandHandler("menu", menu_command), group=1
+    )
+    application.add_handler(
+        CallbackQueryHandler(menu_callback, pattern=r"^menu:"),
+        group=1,
+    )
 
     commands = [
         ("ping", ping_command),
@@ -385,4 +456,6 @@ def register_feature_handlers(application: Application):
     ]
 
     for name, callback in commands:
-        application.add_handler(CommandHandler(name, callback), group=1)
+        application.add_handler(
+            CommandHandler(name, callback), group=1
+        )
