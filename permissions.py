@@ -1,4 +1,5 @@
-# permissions.py
+
+# permissions.py — LOL Studios Manager
 
 from telegram import Update
 from telegram.ext import ContextTypes, ApplicationHandlerStop
@@ -25,20 +26,20 @@ async def registration_gate(
         return
 
     user_id = user.id
-    is_owner_user = is_owner(user_id)
+    owner = is_owner(user_id)
     message = update.effective_message
     query = update.callback_query
 
-    # Registrierungsschritte dürfen weiterlaufen.
+    # Registrierungsschritte und Abbrechen immer erlauben.
     if query:
         data = query.data or ""
 
         if data.startswith("reg:"):
             return
 
-        # Sämtliche Admin-Buttons sind Owner-only.
+        # Admin-Buttons ausschließlich für den Owner.
         if data.startswith("admin:"):
-            if not is_owner_user:
+            if not owner:
                 await query.answer(
                     "⛔ Nur der konfigurierte Owner darf das Admin-Panel nutzen.",
                     show_alert=True
@@ -46,17 +47,19 @@ async def registration_gate(
                 raise ApplicationHandlerStop
             return
 
-        # Normale Buttons erfordern ein Konto.
-        if not is_owner_user and not database.is_registered(user_id):
+        # Registrierung einmal pro Update prüfen.
+        registered = database.is_registered(user_id)
+
+        if not owner and not registered:
             await query.answer(
-                "Bitte zuerst /register ausführen.",
+                "🔒 Bitte zuerst /register ausführen.",
                 show_alert=True
             )
             raise ApplicationHandlerStop
 
-        if not is_owner_user and database.is_suspended(user_id):
+        if not owner and database.is_suspended(user_id):
             await query.answer(
-                "Dein Bot-Konto ist gesperrt.",
+                "⛔ Dein Bot-Konto ist gesperrt.",
                 show_alert=True
             )
             raise ApplicationHandlerStop
@@ -72,28 +75,24 @@ async def registration_gate(
     if text.startswith("/"):
         command = text.split()[0].split("@")[0][1:].lower()
 
-    # /admin darf ausschließlich der Owner benutzen.
+    # Admin-Befehle nur für den Owner.
     if command in {"admin", "adminpanel"}:
-        if not is_owner_user:
+        if not owner:
             await message.reply_text(
                 "⛔ Das Admin-Panel ist nur für den Owner verfügbar."
             )
             raise ApplicationHandlerStop
         return
 
-    # Normale Nachrichten in Gruppen bleiben erlaubt.
-    # Die Registrierungspflicht betrifft Commands und Bot-Buttons.
+    # Normale Nachrichten sind keine Commands.
     if not command:
-        if context.user_data.get("registration_active"):
-            return
         return
 
-    # Diese Befehle bleiben ohne Konto verfügbar.
+    # Öffentliche Commands ohne Registrierung erlauben.
     if command in PUBLIC_COMMANDS:
         return
 
-    # Während des Registrierungsdialogs nur Registrierung fortsetzen
-    # oder abbrechen; keine anderen Commands dazwischen ausführen.
+    # Registrierungsdialog nicht durch andere Commands unterbrechen.
     if context.user_data.get("registration_active"):
         if command == "skip":
             return
@@ -104,7 +103,11 @@ async def registration_gate(
         )
         raise ApplicationHandlerStop
 
-    # Owner ist nicht automatisch von der Registrierungspflicht befreit.
+    # Owner von der normalen Registrierungspflicht ausnehmen.
+    if owner:
+        return
+
+    # Registrierungsstatus prüfen.
     if not database.is_registered(user_id):
         await message.reply_text(
             "🔒 Du musst dich zuerst registrieren.\n\n"
@@ -112,7 +115,7 @@ async def registration_gate(
         )
         raise ApplicationHandlerStop
 
-    if not is_owner_user and database.is_suspended(user_id):
+    if database.is_suspended(user_id):
         await message.reply_text(
             "⛔ Dein Bot-Konto wurde gesperrt. "
             "Du kannst aktuell keine Commands verwenden."
