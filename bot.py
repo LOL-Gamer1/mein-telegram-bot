@@ -6,7 +6,7 @@ import os
 import time
 
 # ⚠️ TRAGE HIER DEINEN ECHTEN TOKEN EIN! (Die Anführungszeichen "" müssen bleiben)
-TOKEN = "DEIN_NEUER_TOKEN_VOM_BOTFATHER"
+TOKEN = "8511282233:AAF05ySHJNJyHxi5ctZbvHhUhSB4fMrrlzc"
 
 # Speicher für Verwarnungen
 verwarnungen = {}
