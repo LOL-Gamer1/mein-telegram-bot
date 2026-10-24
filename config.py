@@ -1,10 +1,18 @@
+
 # config.py
 
-# ERSETZE 123456789 durch DEINE eigene Telegram-User-ID.
+# Deine Telegram-User-ID
 OWNER_ID = 8995460599
 
 # Diese Befehle dürfen auch ohne Registrierung verwendet werden.
-PUBLIC_COMMANDS = {"start", "register", "help", "cancel"}
+PUBLIC_COMMANDS = {
+    "start",
+    "register",
+    "help",
+    "cancel",
+    "myid",
+    "id",
+}
 
 # Profil-Altersgruppen statt eines exakten Geburtsdatums.
 AGE_GROUPS = [
