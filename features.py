@@ -1,9 +1,8 @@
 
 # features.py — LOL Studios Manager
-# MySQL-Version mit Support-Dialog und Minispielen
+# MySQL-Version mit Support-Dialog, Minispielen und Moderationsmenü
 
 import random
-from datetime import datetime, timezone
 
 import database
 from config import OWNER_ID
@@ -35,17 +34,60 @@ def main_keyboard():
             InlineKeyboardButton("🏆 Rangliste", callback_data="menu:leaderboard"),
         ],
         [
+            InlineKeyboardButton(
+                "🛡️ Moderation",
+                callback_data="menu:moderation",
+            ),
+        ],
+        [
             InlineKeyboardButton("📜 Regeln", callback_data="menu:rules"),
             InlineKeyboardButton("ℹ️ Über uns", callback_data="menu:about"),
         ],
-        [InlineKeyboardButton("🔄 Aktualisieren", callback_data="menu:home")],
+        [
+            InlineKeyboardButton("🔄 Aktualisieren", callback_data="menu:home"),
+        ],
     ])
 
 
 def back_keyboard():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Zurück", callback_data="menu:home")]
+    ])
+
+
+def moderation_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "👮 Admins anzeigen",
+                callback_data="mod:admins",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📋 Gruppeninformationen",
+                callback_data="mod:groupinfo",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📜 Gruppenregeln",
+                callback_data="mod:rules",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ Moderationsbefehle",
+                callback_data="mod:commands",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ Zurück zum Hauptmenü",
+                callback_data="menu:home",
+            ),
+        ],
+    ])
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,9 +112,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "menu:profile":
         account = database.get_account(user_id)
+
         if not account:
             await query.edit_message_text(
-                "🔒 Ich finde dein Konto gerade nicht. Registriere dich bitte mit /register.",
+                "🔒 Ich finde dein Konto gerade nicht. "
+                "Registriere dich bitte mit /register.",
                 reply_markup=back_keyboard(),
             )
             return
@@ -94,13 +138,15 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/coinflip – Münzwurf\n"
             "/guess – Zahl erraten\n"
             "/rps – Schere, Stein, Papier\n"
-            "/quiz – Quizfrage\n\nViel Spaß!",
+            "/quiz – Quizfrage\n\n"
+            "Viel Spaß!",
             reply_markup=back_keyboard(),
         )
 
     elif data == "menu:daily":
         await query.edit_message_text(
-            "🎁 TÄGLICHE BELOHNUNG\n\nMit /daily kannst du einmal täglich 100 Punkte abholen.",
+            "🎁 TÄGLICHE BELOHNUNG\n\n"
+            "Mit /daily kannst du einmal täglich 100 Punkte abholen.",
             reply_markup=back_keyboard(),
         )
 
@@ -108,6 +154,16 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             leaderboard_text(),
             reply_markup=back_keyboard(),
+        )
+
+    elif data == "menu:moderation":
+        await query.edit_message_text(
+            "🛡️ MODERATIONSVERWALTUNG\n\n"
+            "Hier findest du die Verwaltung deiner Telegram-Gruppe.\n\n"
+            "Wähle eine Option aus. Gruppenbefehle funktionieren "
+            "nur, wenn der Bot in der betreffenden Gruppe ist und "
+            "die nötigen Telegram-Rechte besitzt.",
+            reply_markup=moderation_keyboard(),
         )
 
     elif data == "menu:rules":
@@ -126,6 +182,65 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ein Community-Bot von LOL Studios mit Profilen, "
             "Minispielen, Punkten und Support.",
             reply_markup=back_keyboard(),
+        )
+
+
+# ---------------- MODERATIONSMENÜ ----------------
+
+async def moderation_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+
+    if data == "mod:admins":
+        await query.edit_message_text(
+            "👮 GRUPPENADMINS\n\n"
+            "Öffne deine Telegram-Gruppe und nutze dort:\n"
+            "/admins\n\n"
+            "Der Bot muss Mitglied der Gruppe sein.",
+            reply_markup=moderation_keyboard(),
+        )
+
+    elif data == "mod:groupinfo":
+        await query.edit_message_text(
+            "📋 GRUPPENINFORMATIONEN\n\n"
+            "Öffne die Gruppe, die du verwalten möchtest, "
+            "und sende dort:\n"
+            "/groupinfo",
+            reply_markup=moderation_keyboard(),
+        )
+
+    elif data == "mod:rules":
+        await query.edit_message_text(
+            "📜 GRUPPENREGELN\n\n"
+            "Öffne die betreffende Telegram-Gruppe und nutze:\n"
+            "/grouprules\n\n"
+            "Die Regeln werden über die Gruppenverwaltung "
+            "festgelegt, sofern diese Funktion dort unterstützt wird.",
+            reply_markup=moderation_keyboard(),
+        )
+
+    elif data == "mod:commands":
+        await query.edit_message_text(
+            "⚙️ MODERATIONSBEFEHLE\n\n"
+            "👮 /admins – Admins anzeigen\n"
+            "📋 /groupinfo – Gruppeninformationen\n"
+            "🔗 /grouplink – Gruppenlink\n"
+            "📜 /grouprules – Gruppenregeln\n"
+            "📌 /pin – Nachricht anheften\n"
+            "🗑️ /del – Nachricht löschen\n"
+            "🔇 /usermute – Mitglied stummschalten\n"
+            "🔊 /userunmute – Stummschaltung aufheben\n"
+            "⬆️ /promote – Mitglied befördern\n"
+            "⬇️ /demote – Adminrechte entziehen\n"
+            "👋 /welcome – Begrüßung konfigurieren\n\n"
+            "Hinweis: Ob ein Befehl funktioniert, hängt von "
+            "der implementierten Funktion und den Bot-Rechten ab.",
+            reply_markup=moderation_keyboard(),
         )
 
 
@@ -174,6 +289,7 @@ async def coinflip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["guess_number"] = random.randint(1, 10)
+
     await update.effective_message.reply_text(
         "🔢 Ich habe eine Zahl zwischen 1 und 10 gewählt!\n"
         "Rate mit /guess ZAHL, zum Beispiel /guess 5."
@@ -241,6 +357,7 @@ async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     player = context.args[0].lower()
+
     if player not in choices:
         await update.effective_message.reply_text(
             "Bitte wähle schere, stein oder papier."
@@ -248,7 +365,6 @@ async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bot_choice = random.choice(list(choices))
-    result = ""
 
     if player == bot_choice:
         result = "Unentschieden! 😄"
@@ -336,7 +452,8 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if answer == correct:
         points = database.add_points(query.from_user.id, 10)
         await query.edit_message_text(
-            f"🎉 Richtig beantwortet!\nDu bekommst 10 Punkte.\nPunktestand: {points}"
+            f"🎉 Richtig beantwortet!\n"
+            f"Du bekommst 10 Punkte.\nPunktestand: {points}"
         )
     else:
         await query.edit_message_text(
@@ -364,10 +481,12 @@ def leaderboard_text():
         return "🏆 Noch gibt es keine Einträge in der Rangliste."
 
     lines = ["🏆 RANGLISTE\n"]
+
     for index, row in enumerate(rows, 1):
         name = row.get("name") or row.get("username") or "Unbekannt"
         amount = row.get("amount") or 0
         lines.append(f"{index}. {name} — {amount} Punkte")
+
     return "\n".join(lines)
 
 
@@ -381,10 +500,12 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     success, total = database.claim_daily(user.id, 100)
+
     if not success:
         await update.effective_message.reply_text(
             "🎁 Deine Tagesbelohnung hast du heute schon abgeholt.\n"
-            f"💰 Punktestand: {total}\nMorgen wartet die nächste Belohnung!"
+            f"💰 Punktestand: {total}\n"
+            "Morgen wartet die nächste Belohnung!"
         )
         return
 
@@ -403,6 +524,7 @@ async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     name = " ".join(context.args).strip()
+
     if not name:
         await update.effective_message.reply_text(
             "Wie soll dein Name lauten? Schreib zum Beispiel /setname Alex."
@@ -425,7 +547,9 @@ async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close()
 
     if changed:
-        await update.effective_message.reply_text(f"Alles klar! Dein Name ist jetzt {name}.")
+        await update.effective_message.reply_text(
+            f"Alles klar! Dein Name ist jetzt {name}."
+        )
     else:
         await update.effective_message.reply_text(
             "Ich finde noch kein Konto für dich. Starte bitte mit /register."
@@ -438,6 +562,7 @@ async def setbio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bio = " ".join(context.args).strip()
+
     if not bio:
         await update.effective_message.reply_text(
             "Was soll in deiner Bio stehen? Beispiel: /setbio Ich mag Spiele."
@@ -475,6 +600,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = " ".join(context.args).strip()
+
     if not message:
         await update.effective_message.reply_text(
             "Was ist passiert? Schreib es einfach hinter den Befehl:\n"
@@ -489,6 +615,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     report_id = database.create_report(user.id, message)
+
     await update.effective_message.reply_text(
         f"✅ Danke für die Meldung! Ich habe sie unter #{report_id} gespeichert."
     )
@@ -510,22 +637,24 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.effective_message
+
     if not user or not msg:
         return
 
-    # /support Dein Problem funktioniert ebenfalls direkt.
     message = " ".join(context.args).strip()
+
     if message:
         await _create_support_ticket(update, context, message)
         return
 
     context.user_data["support_waiting_for_message"] = True
+
     await msg.reply_text(
         f"Hey {user.first_name}! 😊\n\n"
         "Klar, ich helfe dir gern weiter.\n"
         "Erzähl mir einfach, was passiert ist oder wobei du Hilfe brauchst. "
         "Schreib deine nächste Nachricht hier in den Chat.\n\n"
-        "Wenn du es dir anders überlegst, kannst du mit /cancel abbrechen."
+        "Wenn du es dir anders überlegst, kannst du mit /supportcancel abbrechen."
     )
 
 
@@ -536,17 +665,20 @@ async def _create_support_ticket(
 ):
     user = update.effective_user
     msg = update.effective_message
+
     if not user or not msg:
         return
 
     message = message.strip()
+
     if not message:
         await msg.reply_text("Schreib mir bitte kurz, worum es geht.")
         return
 
     if len(message) > 3000:
         await msg.reply_text(
-            "Deine Nachricht ist ziemlich lang. Bitte kürze sie auf höchstens 3000 Zeichen."
+            "Deine Nachricht ist ziemlich lang. "
+            "Bitte kürze sie auf höchstens 3000 Zeichen."
         )
         return
 
@@ -562,7 +694,7 @@ async def _create_support_ticket(
     context.user_data.pop("support_waiting_for_message", None)
 
     await msg.reply_text(
-        f"Alles klar, danke dir! 😊\n\n"
+        "Alles klar, danke dir! 😊\n\n"
         f"Ich habe dein Anliegen als Ticket #{ticket_id} aufgenommen "
         "und an den Bot-Owner weitergeleitet. Sobald eine Antwort vorliegt, "
         "kann sie dir über den Support mitgeteilt werden."
@@ -581,8 +713,6 @@ async def _create_support_ticket(
             ),
         )
     except Exception:
-        # Das Ticket ist bereits gespeichert; eine fehlgeschlagene Nachricht
-        # an den Owner darf das gespeicherte Ticket nicht löschen.
         pass
 
 
@@ -592,13 +722,13 @@ async def support_message_handler(
 ):
     user = update.effective_user
     msg = update.effective_message
+
     if not user or not msg or not msg.text:
         return
 
     if not context.user_data.get("support_waiting_for_message"):
         return
 
-    # Keine Befehle als Ticketinhalt abfangen.
     if msg.text.startswith("/"):
         return
 
@@ -613,7 +743,9 @@ async def supportreply_command(
     msg = update.effective_message
 
     if not user or user.id != OWNER_ID:
-        await msg.reply_text("⛔ Nur der Bot-Owner kann Support-Tickets beantworten.")
+        await msg.reply_text(
+            "⛔ Nur der Bot-Owner kann Support-Tickets beantworten."
+        )
         return
 
     if len(context.args) < 2:
@@ -629,11 +761,13 @@ async def supportreply_command(
         return
 
     reply = " ".join(context.args[1:]).strip()
+
     if not reply:
         await msg.reply_text("Schreib bitte noch deine Antwort dazu.")
         return
 
     ticket = database.get_ticket(ticket_id)
+
     if not ticket:
         await msg.reply_text("Ich finde dieses Ticket leider nicht.")
         return
@@ -654,7 +788,9 @@ async def supportreply_command(
                 f"{reply}"
             ),
         )
-        await msg.reply_text(f"✅ Antwort zu Ticket #{ticket_id} wurde gesendet.")
+        await msg.reply_text(
+            f"✅ Antwort zu Ticket #{ticket_id} wurde gesendet."
+        )
     except Exception:
         await msg.reply_text(
             "Die Antwort wurde gespeichert, aber ich konnte sie dem Nutzer nicht zustellen."
@@ -666,10 +802,12 @@ async def mytickets_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
+
     if not user:
         return
 
     tickets = database.list_user_tickets(user.id, limit=10)
+
     if not tickets:
         await update.effective_message.reply_text(
             "Du hast noch keine Support-Tickets. Mit /support kannst du mir schreiben."
@@ -677,6 +815,7 @@ async def mytickets_command(
         return
 
     lines = ["📨 DEINE SUPPORT-TICKETS\n"]
+
     for ticket in tickets:
         lines.append(
             f"#{ticket['id']} — {ticket['status']} — "
@@ -686,8 +825,12 @@ async def mytickets_command(
     await update.effective_message.reply_text("\n".join(lines))
 
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def supportcancel_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     was_waiting = context.user_data.pop("support_waiting_for_message", None)
+
     if was_waiting:
         await update.effective_message.reply_text(
             "Alles klar, ich habe den Support-Dialog abgebrochen. "
@@ -695,7 +838,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.effective_message.reply_text(
-            "Es gibt gerade keinen offenen Dialog, den ich abbrechen müsste."
+            "Es gibt gerade keinen offenen Support-Dialog."
         )
 
 
@@ -741,8 +884,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setbio TEXT – Bio ändern\n"
         "/report TEXT – Problem melden\n"
         "/support – Support-Dialog starten\n"
-        "/mytickets – eigene Tickets anzeigen\n"
-        "/cancel – offenen Dialog abbrechen"
+        "/supportcancel – Support-Dialog abbrechen\n"
+        "/mytickets – eigene Tickets anzeigen"
     )
 
 
@@ -750,12 +893,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_feature_handlers(application: Application):
     application.add_handler(
-        CommandHandler("menu", menu_command), group=1
+        CommandHandler("menu", menu_command),
+        group=1,
     )
+
     application.add_handler(
         CallbackQueryHandler(menu_callback, pattern=r"^menu:"),
         group=1,
     )
+
+    application.add_handler(
+        CallbackQueryHandler(moderation_callback, pattern=r"^mod:"),
+        group=1,
+    )
+
     application.add_handler(
         CallbackQueryHandler(quiz_callback, pattern=r"^quiz:"),
         group=1,
@@ -779,7 +930,7 @@ def register_feature_handlers(application: Application):
         ("support", support_command),
         ("supportreply", supportreply_command),
         ("mytickets", mytickets_command),
-        ("cancel", cancel_command),
+        ("supportcancel", supportcancel_command),
         ("stats", stats_command),
         ("games", games_command),
         ("help", help_command),
@@ -787,14 +938,13 @@ def register_feature_handlers(application: Application):
 
     for name, callback in commands:
         application.add_handler(
-            CommandHandler(name, callback), group=1
+            CommandHandler(name, callback),
+            group=1,
         )
 
-    # Nur normale Textnachrichten werden als Antwort auf /support behandelt.
-    # CommandHandler in derselben Gruppe hat Vorrang, wenn ein Befehl gesendet wird.
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.ChatType.GROUPS,
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             support_message_handler,
         ),
         group=2,
