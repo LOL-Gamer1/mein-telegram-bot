@@ -1,4 +1,4 @@
-features.py — LOL Studios Manager
+#features.py — LOL Studios Manager
 
 MySQL-Version mit Support-Dialog, Minispielen und Moderationsmenü
 
