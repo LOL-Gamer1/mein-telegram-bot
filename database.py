@@ -1,5 +1,6 @@
+
 # database.py — LOL Studios Manager
-# MySQL-Datenbank und Gruppenanfragen
+# MySQL-Datenbank, Support-Tickets und Gruppenanfragen
 
 import os
 from contextlib import contextmanager
@@ -85,7 +86,6 @@ def init_db():
             )
         """)
 
-        # Gruppenbeitrittsanfragen
         cur.execute("""
             CREATE TABLE IF NOT EXISTS group_join_requests (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -98,8 +98,25 @@ def init_db():
             )
         """)
 
+        # Support-Tickets
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                message TEXT NOT NULL,
+                reply TEXT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                replied_at TIMESTAMP NULL,
+                INDEX idx_support_status (status),
+                INDEX idx_support_user (user_id)
+            )
+        """)
+
         cur.close()
 
+
+# ---------------- ACCOUNTS ----------------
 
 def get_account(user_id):
     with connect() as db:
@@ -211,6 +228,8 @@ def search_accounts(query, limit=20):
         return rows
 
 
+# ---------------- POINTS ----------------
+
 def get_points(user_id):
     with connect() as db:
         cur = db.cursor()
@@ -250,7 +269,6 @@ def claim_daily(user_id, amount=100):
 
     with connect() as db:
         cur = db.cursor()
-
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),),
@@ -298,6 +316,8 @@ def leaderboard(limit=10):
         return rows
 
 
+# ---------------- REPORTS ----------------
+
 def create_report(user_id, message):
     with connect() as db:
         cur = db.cursor()
@@ -310,10 +330,102 @@ def create_report(user_id, message):
         return report_id
 
 
+# ---------------- SUPPORT TICKETS ----------------
+
+def create_ticket(user_id, message):
+    message = str(message).strip()
+    if not message:
+        raise ValueError("Die Ticketnachricht darf nicht leer sein.")
+
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO support_tickets (user_id, message, status)
+            VALUES (%s, %s, 'open')
+        """, (int(user_id), message))
+        ticket_id = cur.lastrowid
+        cur.close()
+        return ticket_id
+
+
+def get_ticket(ticket_id):
+    with connect() as db:
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            SELECT *
+            FROM support_tickets
+            WHERE id = %s
+        """, (int(ticket_id),))
+        result = cur.fetchone()
+        cur.close()
+        return result
+
+
+def list_tickets(status="open", limit=10):
+    with connect() as db:
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            SELECT *
+            FROM support_tickets
+            WHERE status = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (str(status), int(limit)))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+
+
+def reply_ticket(ticket_id, reply):
+    reply = str(reply).strip()
+    if not reply:
+        raise ValueError("Die Antwort darf nicht leer sein.")
+
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            UPDATE support_tickets
+            SET reply = %s,
+                status = 'answered',
+                replied_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (reply, int(ticket_id)))
+        changed = cur.rowcount > 0
+        cur.close()
+        return changed
+
+
+def close_ticket(ticket_id):
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            UPDATE support_tickets
+            SET status = 'closed'
+            WHERE id = %s
+        """, (int(ticket_id),))
+        changed = cur.rowcount > 0
+        cur.close()
+        return changed
+
+
+def list_user_tickets(user_id, limit=10):
+    with connect() as db:
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            SELECT *
+            FROM support_tickets
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (int(user_id), int(limit)))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+
+
 # ---------------- GROUP JOIN REQUESTS ----------------
 
 def create_join_request(requester_id, group_link):
-    """Speichert eine neue Gruppenanfrage und gibt deren ID zurück."""
     with connect() as db:
         cur = db.cursor()
         cur.execute("""
@@ -355,7 +467,6 @@ def list_join_requests(status="pending", limit=20):
 
 
 def decide_join_request(request_id, status, owner_id):
-    """Eine Anfrage kann nur einmal entschieden werden."""
     if status not in ("approved", "rejected"):
         raise ValueError("Ungültiger Status.")
 
@@ -368,7 +479,6 @@ def decide_join_request(request_id, status, owner_id):
                 decided_by = %s
             WHERE id = %s AND status = 'pending'
         """, (status, int(owner_id), int(request_id)))
-
         changed = cur.rowcount > 0
         cur.close()
         return changed
