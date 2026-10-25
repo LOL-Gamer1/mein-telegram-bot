@@ -1,17 +1,41 @@
 # group_moderation.py — LOL Studios Manager
 # Gruppenmoderation für python-telegram-bot v20+
 
+import re
+import time
+from collections import defaultdict, deque
+
+import database
 from telegram import Update, ChatPermissions
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
+    MessageHandler,
+    ChatMemberHandler,
     ContextTypes,
+    filters,
 )
-from telegram.error import TelegramError
-
 
 GROUP_TYPES = ("group", "supergroup")
 
+# Anti-Spam: Nachrichten der letzten Sekunden pro Nutzer
+SPAM_TIMES = defaultdict(deque)
+SPAM_WINDOW = 8
+SPAM_LIMIT = 5
+
+# Einfache Wortliste für den Beleidigungsfilter.
+# Bei Bedarf kannst du sie später erweitern.
+INSULT_WORDS = {
+    "idiot", "idioten", "dummkopf", "depp", "deppen",
+    "arschloch", "arschlöcher", "hurensohn", "hurensöhne",
+    "wichser", "mistkerl", "blödmann", "vollidiot",
+}
+
+
+# --------------------------------------------------
+# HILFSFUNKTIONEN
+# --------------------------------------------------
 
 async def _is_group_admin(update, context):
     msg = update.effective_message
@@ -24,24 +48,37 @@ async def _is_group_admin(update, context):
 
     try:
         member = await context.bot.get_chat_member(msg.chat_id, user.id)
+
         if member.status not in ("administrator", "creator"):
-            await msg.reply_text("⛔ Diesen Befehl dürfen nur Gruppenadmins verwenden.")
+            await msg.reply_text(
+                "⛔ Diesen Befehl dürfen nur Gruppenadmins verwenden."
+            )
             return False
 
-        bot_member = await context.bot.get_chat_member(msg.chat_id, context.bot.id)
+        bot_member = await context.bot.get_chat_member(
+            msg.chat_id, context.bot.id
+        )
+
         if bot_member.status != "administrator":
-            await msg.reply_text("⚠️ Bitte mache mich zuerst zum Gruppenadmin.")
+            await msg.reply_text(
+                "⚠️ Bitte mache mich zuerst zum Gruppenadmin."
+            )
             return False
 
         return True
+
     except TelegramError:
-        await msg.reply_text("Ich konnte deine Gruppenrechte nicht prüfen. Bitte kontrolliere meine Adminrechte.")
+        await msg.reply_text(
+            "Ich konnte deine Gruppenrechte nicht prüfen. "
+            "Bitte kontrolliere meine Adminrechte."
+        )
         return False
 
 
 async def _find_target(update, context):
-    """Sucht eine Person per Antwort oder numerischer Telegram-ID."""
+    """Nutzer per Antwort auf eine Nachricht oder per Telegram-ID finden."""
     msg = update.effective_message
+
     if not msg:
         return None
 
@@ -51,14 +88,13 @@ async def _find_target(update, context):
     if context.args:
         value = context.args[0].strip()
 
-        # Telegrams Bot API kann einen beliebigen @username nicht zuverlässig
-        # in eine User-ID umwandeln. IDs funktionieren dagegen zuverlässig.
         if value.startswith("@"):
             return None
 
         try:
-            user_id = int(value)
-            member = await context.bot.get_chat_member(msg.chat_id, user_id)
+            member = await context.bot.get_chat_member(
+                msg.chat_id, int(value)
+            )
             return member.user
         except (ValueError, TelegramError):
             return None
@@ -68,14 +104,17 @@ async def _find_target(update, context):
 
 async def _target_help(msg, command):
     await msg.reply_text(
-        f"Markiere die Person am einfachsten, indem du auf ihre Nachricht antwortest und "
-        f"/{command} schreibst.\n\n"
+        f"Antworte auf eine Nachricht der Person und schreibe /{command}.\n\n"
         f"Alternativ: /{command} TELEGRAM_ID\n"
-        f"Ein beliebiger @username lässt sich von Telegram-Bots nicht immer auflösen."
+        "Ein @username lässt sich nicht immer auflösen."
     )
 
 
-async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------
+# GRUPPENINFORMATIONEN
+# --------------------------------------------------
+
+async def admins_command(update, context):
     msg = update.effective_message
     if not msg or msg.chat.type not in GROUP_TYPES:
         if msg:
@@ -84,17 +123,20 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         admins = await context.bot.get_chat_administrators(msg.chat_id)
-        lines = ["🛡️ **Gruppenadmins**"]
+        lines = ["🛡️ Gruppenadmins"]
+
         for item in admins:
-            u = item.user
-            suffix = f" (@{u.username})" if u.username else ""
-            lines.append(f"• {u.full_name}{suffix}")
-        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+            user = item.user
+            suffix = f" (@{user.username})" if user.username else ""
+            lines.append(f"• {user.full_name}{suffix}")
+
+        await msg.reply_text("\n".join(lines))
+
     except TelegramError:
-        await msg.reply_text("Die Adminliste konnte ich gerade nicht laden.")
+        await msg.reply_text("Die Adminliste konnte nicht geladen werden.")
 
 
-async def groupinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def groupinfo_command(update, context):
     msg = update.effective_message
     if not msg or msg.chat.type not in GROUP_TYPES:
         if msg:
@@ -114,20 +156,31 @@ async def groupinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Die Gruppeninfos konnten nicht geladen werden.")
 
 
-async def grouplink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def grouplink_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
 
     try:
         chat = await context.bot.get_chat(msg.chat_id)
-        link = chat.invite_link or await context.bot.export_chat_invite_link(msg.chat_id)
+        link = chat.invite_link
+
+        if not link:
+            link = await context.bot.export_chat_invite_link(msg.chat_id)
+
         await msg.reply_text(f"🔗 Gruppenlink:\n{link}")
+
     except TelegramError:
-        await msg.reply_text("Ich brauche die Adminberechtigung zum Verwalten von Einladungslinks.")
+        await msg.reply_text(
+            "Ich brauche die Adminberechtigung zum Verwalten von Einladungslinks."
+        )
 
 
-async def kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------
+# MITGLIEDER VERWALTEN
+# --------------------------------------------------
+
+async def kick_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -138,18 +191,23 @@ async def kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if target.id in (update.effective_user.id, context.bot.id):
-        await msg.reply_text("Das geht nicht: Du kannst dich selbst oder mich nicht damit entfernen.")
+        await msg.reply_text("Du kannst dich selbst oder den Bot nicht so entfernen.")
         return
 
     try:
         await context.bot.ban_chat_member(msg.chat_id, target.id)
-        await context.bot.unban_chat_member(msg.chat_id, target.id, only_if_banned=True)
-        await msg.reply_text(f"👢 {target.full_name} wurde aus der Gruppe entfernt.")
+        await context.bot.unban_chat_member(
+            msg.chat_id, target.id, only_if_banned=True
+        )
+        await msg.reply_text(f"👢 {target.full_name} wurde entfernt.")
+
     except TelegramError:
-        await msg.reply_text("Das Entfernen ist fehlgeschlagen. Prüfe meine Rechte und die Admin-Rangfolge.")
+        await msg.reply_text(
+            "Entfernen fehlgeschlagen. Prüfe meine Rechte und die Admin-Rangfolge."
+        )
 
 
-async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def promote_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -160,7 +218,7 @@ async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if target.id == context.bot.id:
-        await msg.reply_text("Ich bin bereits in der Gruppe – bitte ändere meine Rechte direkt in Telegram.")
+        await msg.reply_text("Ändere meine Rechte direkt in den Telegram-Gruppeneinstellungen.")
         return
 
     try:
@@ -174,12 +232,17 @@ async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_pin_messages=True,
             can_promote_members=False,
         )
-        await msg.reply_text(f"⬆️ {target.full_name} wurde zum Admin befördert, soweit es meine Rechte erlauben.")
+        await msg.reply_text(
+            f"⬆️ Adminrechte für {target.full_name} wurden angefordert."
+        )
+
     except TelegramError:
-        await msg.reply_text("Das Befördern ist fehlgeschlagen. Prüfe meine Rechte und deine Admin-Rangfolge.")
+        await msg.reply_text(
+            "Befördern fehlgeschlagen. Prüfe deine Rechte und die Admin-Rangfolge."
+        )
 
 
-async def demote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def demote_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -205,41 +268,48 @@ async def demote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_edit_messages=False,
         )
         await msg.reply_text(f"⬇️ Adminrechte von {target.full_name} wurden entfernt.")
+
     except TelegramError:
-        await msg.reply_text("Das Zurückstufen ist fehlgeschlagen. Prüfe die Admin-Rangfolge.")
+        await msg.reply_text("Zurückstufen fehlgeschlagen. Prüfe die Admin-Rangfolge.")
 
 
-async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pin_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
+
     if not msg.reply_to_message:
-        await msg.reply_text("Antworte auf die Nachricht, die angepinnt werden soll, und schreibe /pin.")
+        await msg.reply_text(
+            "Antworte auf die Nachricht, die angepinnt werden soll, und schreibe /pin."
+        )
         return
 
     try:
         await msg.reply_to_message.pin()
         await msg.reply_text("📌 Nachricht angepinnt.")
     except TelegramError:
-        await msg.reply_text("Das Anpinnen ist fehlgeschlagen. Prüfe meine Rechte.")
+        await msg.reply_text("Anpinnen fehlgeschlagen. Prüfe meine Rechte.")
 
 
-async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
+
     if not msg.reply_to_message:
-        await msg.reply_text("Antworte auf die Nachricht, die gelöscht werden soll, und schreibe /del.")
+        await msg.reply_text(
+            "Antworte auf die zu löschende Nachricht und schreibe /del."
+        )
         return
 
     try:
         await msg.reply_to_message.delete()
         await msg.delete()
     except TelegramError:
-        await msg.reply_text("Das Löschen ist fehlgeschlagen. Prüfe meine Rechte.")
+        await msg.reply_text("Löschen fehlgeschlagen. Prüfe meine Rechte.")
 
 
-async def usermute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def usermute_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -259,12 +329,13 @@ async def usermute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target.id,
             ChatPermissions(can_send_messages=False),
         )
-        await msg.reply_text(f"🔇 {target.full_name} kann vorerst nicht mehr schreiben.")
+        await msg.reply_text(f"🔇 {target.full_name} wurde stummgeschaltet.")
+
     except TelegramError:
-        await msg.reply_text("Das Stummschalten ist fehlgeschlagen. Prüfe meine Rechte.")
+        await msg.reply_text("Stummschalten fehlgeschlagen. Prüfe meine Rechte.")
 
 
-async def userunmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def userunmute_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -292,12 +363,12 @@ async def userunmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ),
         )
         await msg.reply_text(f"🔊 {target.full_name} darf wieder schreiben.")
+
     except TelegramError:
-        await msg.reply_text("Das Entstummen ist fehlgeschlagen. Prüfe meine Rechte.")
+        await msg.reply_text("Entstummen fehlgeschlagen. Prüfe meine Rechte.")
 
 
-async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Schaltet normale Mitglieder in der gesamten Gruppe stumm."""
+async def mute_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -308,16 +379,14 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ChatPermissions(can_send_messages=False),
         )
         await msg.reply_text(
-            "🔇 Schreibrechte für normale Mitglieder wurden deaktiviert.\n"
-            "Gruppenadmins können weiterhin schreiben.\n"
-            "Nutze /unmute, um die Gruppen-Schreibrechte wiederherzustellen."
+            "🔇 Normale Mitglieder können nicht mehr schreiben.\n"
+            "Mit /unmute kannst du die Schreibrechte wieder aktivieren."
         )
     except TelegramError:
-        await msg.reply_text("Ich konnte die Gruppen-Schreibrechte nicht ändern. Prüfe meine Adminrechte.")
+        await msg.reply_text("Gruppen-Stummschaltung fehlgeschlagen.")
 
 
-async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stellt allgemeine Schreibrechte der Gruppe wieder her."""
+async def unmute_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
@@ -340,77 +409,333 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await msg.reply_text("🔊 Gruppen-Schreibrechte wurden wieder aktiviert.")
     except TelegramError:
-        await msg.reply_text("Ich konnte die Gruppen-Schreibrechte nicht wiederherstellen. Prüfe meine Adminrechte.")
+        await msg.reply_text("Schreibrechte konnten nicht wiederhergestellt werden.")
 
 
-async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------
+# DAUERHAFTE REGELN UND BEGRÜSSUNGSTEXT
+# --------------------------------------------------
+
+async def rules_command(update, context):
     msg = update.effective_message
     if not msg:
         return
 
     rules = " ".join(context.args).strip()
+
     if rules:
         if not await _is_group_admin(update, context):
             return
-        context.chat_data["group_rules"] = rules[:3500]
-        await msg.reply_text("📜 Regeln gespeichert. Hinweis: Diese Speicherung gilt nur, solange der Bot läuft.")
+
+        database.set_group_setting(msg.chat_id, "rules", rules[:3500])
+        await msg.reply_text("📜 Gruppenregeln dauerhaft gespeichert.")
     else:
-        saved = context.chat_data.get("group_rules", "Für diese Gruppe wurden noch keine Regeln festgelegt.")
-        await msg.reply_text(f"📜 Gruppenregeln:\n{saved}")
+        saved = database.get_group_settings(msg.chat_id).get("rules")
+        await msg.reply_text(
+            "📜 Gruppenregeln:\n"
+            + (saved or "Für diese Gruppe wurden noch keine Regeln festgelegt.")
+        )
 
 
-async def grouprules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def grouprules_command(update, context):
     await rules_command(update, context)
 
 
-async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def welcome_command(update, context):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
 
     text = " ".join(context.args).strip()
+
     if not text:
-        await msg.reply_text("Schreibe zum Beispiel: /welcome Willkommen {name}!")
+        settings = database.get_group_settings(msg.chat_id)
+        await msg.reply_text(
+            "Aktueller Begrüßungstext:\n"
+            + settings.get("welcome_text", "Willkommen {name}!")
+            + "\n\nBeispiel: /welcome Willkommen {name}!"
+        )
         return
 
-    context.chat_data["welcome_text"] = text[:1000]
-    await msg.reply_text("✅ Begrüßungstext gespeichert. Automatische Begrüßungen sind damit noch nicht aktiviert.")
+    database.set_group_setting(msg.chat_id, "welcome_text", text[:1000])
+    await msg.reply_text(
+        "✅ Begrüßungstext gespeichert.\n"
+        "Aktiviere die automatische Begrüßung mit /welcometoggle an."
+    )
 
 
-async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------
+# MODERATION EIN- UND AUSSCHALTEN
+# --------------------------------------------------
+
+async def _toggle(update, context, setting, label):
     msg = update.effective_message
     if not await _is_group_admin(update, context):
         return
+
+    if not context.args or context.args[0].lower() not in ("an", "aus", "on", "off"):
+        enabled = bool(
+            database.get_group_settings(msg.chat_id).get(setting, 0)
+        )
+        await msg.reply_text(
+            f"{label}: {'AN' if enabled else 'AUS'}\n"
+            "Verwende an oder aus, zum Beispiel /antispam an."
+        )
+        return
+
+    enabled = context.args[0].lower() in ("an", "on")
+    database.set_group_setting(msg.chat_id, setting, int(enabled))
+    await msg.reply_text(
+        f"✅ {label} ist jetzt {'AN' if enabled else 'AUS'}."
+    )
+
+
+async def antispam_command(update, context):
+    await _toggle(update, context, "anti_spam", "Anti-Spam")
+
+
+async def antiinsult_command(update, context):
+    await _toggle(update, context, "anti_insult", "Beleidigungsfilter")
+
+
+async def antisticker_command(update, context):
+    await _toggle(update, context, "anti_sticker", "Anti-Sticker")
+
+
+async def welcometoggle_command(update, context):
+    await _toggle(
+        update, context, "welcome_enabled", "Automatische Begrüßung"
+    )
+
+
+# --------------------------------------------------
+# VERWARNUNGSSYSTEM
+# --------------------------------------------------
+
+async def warn_command(update, context):
+    msg = update.effective_message
+    if not await _is_group_admin(update, context):
+        return
+
+    target = await _find_target(update, context)
+    if not target:
+        await _target_help(msg, "warn")
+        return
+
+    if target.id == context.bot.id:
+        await msg.reply_text("Ich kann mich nicht selbst verwarnen.")
+        return
+
+    count = database.add_group_warning(msg.chat_id, target.id)
+    settings = database.get_group_settings(msg.chat_id)
+    limit = max(1, int(settings.get("warning_limit", 3)))
+
+    if count >= limit:
+        try:
+            await context.bot.ban_chat_member(msg.chat_id, target.id)
+            await msg.reply_text(
+                f"⛔ {target.full_name} hat {count} Verwarnungen erreicht "
+                "und wurde aus der Gruppe entfernt."
+            )
+        except TelegramError:
+            await msg.reply_text(
+                f"⚠️ {target.full_name}: {count}/{limit} Verwarnungen. "
+                "Entfernen fehlgeschlagen; prüfe meine Rechte."
+            )
+    else:
+        await msg.reply_text(
+            f"⚠️ {target.full_name} wurde verwarnt ({count}/{limit})."
+        )
+
+
+async def warnings_command(update, context):
+    msg = update.effective_message
+    if not await _is_group_admin(update, context):
+        return
+
+    target = await _find_target(update, context)
+    if not target:
+        await _target_help(msg, "warnings")
+        return
+
+    count = database.get_group_warnings(msg.chat_id, target.id)
+    await msg.reply_text(
+        f"⚠️ {target.full_name} hat {count} Verwarnung(en)."
+    )
+
+
+async def resetwarnings_command(update, context):
+    msg = update.effective_message
+    if not await _is_group_admin(update, context):
+        return
+
+    target = await _find_target(update, context)
+    if not target:
+        await _target_help(msg, "resetwarnings")
+        return
+
+    database.reset_group_warnings(msg.chat_id, target.id)
+    await msg.reply_text(
+        f"✅ Verwarnungen von {target.full_name} wurden zurückgesetzt."
+    )
+
+
+# --------------------------------------------------
+# AUTOMATISCHE MODERATION
+# --------------------------------------------------
+
+async def _moderation_filter(update, context):
+    msg = update.effective_message
+    user = update.effective_user
+
+    if not msg or not user or msg.chat.type not in GROUP_TYPES or user.is_bot:
+        return
+
+    try:
+        member = await context.bot.get_chat_member(msg.chat_id, user.id)
+
+        # Gruppenadmins nicht automatisch moderieren
+        if member.status in ("administrator", "creator"):
+            return
+
+        settings = database.get_group_settings(msg.chat_id)
+
+        # Sticker blockieren
+        if msg.sticker and settings.get("anti_sticker"):
+            await msg.delete()
+            return
+
+        # Beleidigungsfilter
+        if settings.get("anti_insult") and msg.text:
+            words = set(
+                re.findall(r"[^\W_]+", msg.text.lower(), flags=re.UNICODE)
+            )
+
+            if words & INSULT_WORDS:
+                await msg.delete()
+                await msg.reply_text(
+                    "🚫 Bitte bleib respektvoll. Beleidigungen sind hier nicht erlaubt."
+                )
+                return
+
+        # Anti-Spam: mindestens 5 Textnachrichten innerhalb von 8 Sekunden
+        if settings.get("anti_spam") and msg.text:
+            key = (msg.chat_id, user.id)
+            now = time.monotonic()
+            history = SPAM_TIMES[key]
+
+            while history and now - history[0] > SPAM_WINDOW:
+                history.popleft()
+
+            history.append(now)
+
+            if len(history) >= SPAM_LIMIT:
+                await msg.delete()
+                history.clear()
+                await msg.reply_text("🚫 Bitte nicht spammen.")
+
+    except TelegramError:
+        # Fehlende Telegram-Rechte können die Moderation verhindern.
+        return
+    except Exception:
+        # Ein vorübergehender Datenbankfehler soll den Bot nicht abstürzen lassen.
+        return
+
+
+async def _welcome_new_members(update, context):
+    change = update.chat_member
+    if not change or not update.effective_chat:
+        return
+
+    old_status = change.old_chat_member.status
+    new_status = change.new_chat_member.status
+
+    if new_status not in ("member", "administrator"):
+        return
+
+    if old_status in ("member", "administrator", "creator"):
+        return
+
+    try:
+        settings = database.get_group_settings(update.effective_chat.id)
+
+        if not settings.get("welcome_enabled"):
+            return
+
+        user = change.new_chat_member.user
+        template = settings.get("welcome_text") or "Willkommen {name}!"
+
+        welcome = template.replace("{name}", user.full_name)
+        welcome = welcome.replace(
+            "{username}",
+            "@" + user.username if user.username else user.full_name,
+        )
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=welcome[:1000],
+        )
+
+    except Exception:
+        return
+
+
+# --------------------------------------------------
+# HILFE UND BOT VERLASSEN
+# --------------------------------------------------
+
+async def leave_command(update, context):
+    msg = update.effective_message
+    if not await _is_group_admin(update, context):
+        return
+
     await msg.reply_text("Ich verlasse die Gruppe jetzt auf Admin-Anfrage.")
     await context.bot.leave_chat(msg.chat_id)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
+async def help_command(update, context):
+    msg = update.effective_message
+    if not msg:
+        return
+
+    await msg.reply_text(
         "🛡️ GRUPPENMODERATION\n\n"
         "/admins – Gruppenadmins anzeigen\n"
         "/groupinfo – Gruppeninfos\n"
         "/grouplink – Einladungslink\n"
-        "/kick – auf Nachricht antworten oder ID angeben\n"
+        "/kick – Nutzer entfernen\n"
         "/promote – Adminrechte vergeben\n"
         "/demote – Adminrechte entfernen\n"
         "/pin – Nachricht anpinnen\n"
-        "/del – beantwortete Nachricht löschen\n"
-        "/mute – normale Mitglieder in der Gruppe stummschalten\n"
-        "/unmute – Gruppen-Schreibrechte wieder aktivieren\n"
+        "/del – Nachricht löschen\n"
+        "/mute – normale Mitglieder stummschalten\n"
+        "/unmute – Gruppen-Schreibrechte wiederherstellen\n"
         "/usermute – einzelne Person stummschalten\n"
-        "/userunmute – einzelne Person entstummen\n"
-        "/grouprules TEXT – Gruppenregeln setzen\n"
-        "/grouprules – Regeln anzeigen\n"
-        "/welcome TEXT – Begrüßungstext speichern\n"
+        "/userunmute – einzelne Person entstummen\n\n"
+        "AUTOMATISCHE MODERATION\n"
+        "/antispam an|aus – Anti-Spam\n"
+        "/antiinsult an|aus – Beleidigungsfilter\n"
+        "/antisticker an|aus – Sticker blockieren\n"
+        "/welcometoggle an|aus – automatische Begrüßung\n"
+        "/welcome TEXT – Begrüßungstext setzen\n"
+        "/rules TEXT – Regeln speichern\n"
+        "/rules – Regeln anzeigen\n\n"
+        "VERWARNUNGEN\n"
+        "/warn – Nutzer verwarnen\n"
+        "/warnings – Verwarnungen anzeigen\n"
+        "/resetwarnings – Verwarnungen zurücksetzen\n\n"
         "/leave – Bot aus der Gruppe entfernen\n"
         "/modhelp – diese Hilfe anzeigen\n\n"
-        "Tipp: Bei Befehlen für einzelne Personen einfach auf ihre Nachricht antworten."
+        "Bei Nutzerbefehlen antworte auf eine Nachricht oder verwende die Telegram-ID."
     )
 
 
+# --------------------------------------------------
+# HANDLER REGISTRIEREN
+# --------------------------------------------------
+
 def register_group_handlers(application: Application):
-    handlers = [
+    commands = [
         ("admins", admins_command),
         ("admin", admins_command),
         ("groupinfo", groupinfo_command),
@@ -428,12 +753,43 @@ def register_group_handlers(application: Application):
         ("muteuser", usermute_command),
         ("userunmute", userunmute_command),
         ("unmuteuser", userunmute_command),
-        ("grouprules", grouprules_command),
         ("rules", rules_command),
+        ("grouprules", grouprules_command),
         ("welcome", welcome_command),
         ("leave", leave_command),
         ("modhelp", help_command),
+        ("antispam", antispam_command),
+        ("antiinsult", antiinsult_command),
+        ("antibeleidigung", antiinsult_command),
+        ("antisticker", antisticker_command),
+        ("welcometoggle", welcometoggle_command),
+        ("warn", warn_command),
+        ("warnings", warnings_command),
+        ("resetwarnings", resetwarnings_command),
     ]
 
-    for name, callback in handlers:
-        application.add_handler(CommandHandler(name, callback), group=1)
+    for name, callback in commands:
+        application.add_handler(
+            CommandHandler(name, callback),
+            group=1,
+        )
+
+    # Textnachrichten und Sticker prüfen
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS
+            & ~filters.COMMAND
+            & (filters.TEXT | filters.Sticker.ALL),
+            _moderation_filter,
+        ),
+        group=2,
+    )
+
+    # Automatische Begrüßung bei Änderungen des Mitgliedsstatus
+    application.add_handler(
+        ChatMemberHandler(
+            _welcome_new_members,
+            ChatMemberHandler.CHAT_MEMBER,
+        ),
+        group=2,
+    )
