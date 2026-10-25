@@ -1,6 +1,6 @@
 
 # database.py — LOL Studios Manager
-# MySQL-Datenbank, Support-Tickets und Gruppenanfragen
+# MySQL-Datenbank, Accounts, Support, Gruppenanfragen und Moderation
 
 import os
 from contextlib import contextmanager
@@ -15,7 +15,6 @@ def mysql_config():
         "MYSQL_USER",
         "MYSQL_PASSWORD",
     ]
-
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         raise RuntimeError(
@@ -46,6 +45,7 @@ def connect():
 
 
 def init_db():
+    """Erstellt fehlende Tabellen. Vorhandene Tabellen bleiben erhalten."""
     with connect() as db:
         cur = db.cursor()
 
@@ -98,7 +98,6 @@ def init_db():
             )
         """)
 
-        # Support-Tickets
         cur.execute("""
             CREATE TABLE IF NOT EXISTS support_tickets (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -110,6 +109,35 @@ def init_db():
                 replied_at TIMESTAMP NULL,
                 INDEX idx_support_status (status),
                 INDEX idx_support_user (user_id)
+            )
+        """)
+
+        # Dauerhafte Moderationseinstellungen pro Telegram-Gruppe
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS group_moderation_settings (
+                chat_id BIGINT PRIMARY KEY,
+                anti_spam TINYINT NOT NULL DEFAULT 0,
+                anti_insult TINYINT NOT NULL DEFAULT 0,
+                anti_sticker TINYINT NOT NULL DEFAULT 0,
+                welcome_enabled TINYINT NOT NULL DEFAULT 0,
+                welcome_text TEXT NOT NULL,
+                rules TEXT NOT NULL,
+                warning_limit INT NOT NULL DEFAULT 3,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Verwarnungen einzelner Nutzer in einzelnen Gruppen
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS group_warnings (
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                warning_count INT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, user_id),
+                INDEX idx_group_warnings_user (user_id)
             )
         """)
 
@@ -244,7 +272,6 @@ def get_points(user_id):
 
 def add_points(user_id, amount):
     amount = int(amount)
-
     with connect() as db:
         cur = db.cursor()
         cur.execute("""
@@ -252,7 +279,6 @@ def add_points(user_id, amount):
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE amount = amount + %s
         """, (int(user_id), amount, amount))
-
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),),
@@ -266,7 +292,6 @@ def claim_daily(user_id, amount=100):
     from datetime import datetime, timezone
 
     today = datetime.now(timezone.utc).date()
-
     with connect() as db:
         cur = db.cursor()
         cur.execute(
@@ -291,7 +316,6 @@ def claim_daily(user_id, amount=100):
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE amount = amount + %s
         """, (int(user_id), amount, amount))
-
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),),
@@ -351,11 +375,10 @@ def create_ticket(user_id, message):
 def get_ticket(ticket_id):
     with connect() as db:
         cur = db.cursor(dictionary=True)
-        cur.execute("""
-            SELECT *
-            FROM support_tickets
-            WHERE id = %s
-        """, (int(ticket_id),))
+        cur.execute(
+            "SELECT * FROM support_tickets WHERE id = %s",
+            (int(ticket_id),),
+        )
         result = cur.fetchone()
         cur.close()
         return result
@@ -365,8 +388,7 @@ def list_tickets(status="open", limit=10):
     with connect() as db:
         cur = db.cursor(dictionary=True)
         cur.execute("""
-            SELECT *
-            FROM support_tickets
+            SELECT * FROM support_tickets
             WHERE status = %s
             ORDER BY created_at DESC
             LIMIT %s
@@ -398,11 +420,10 @@ def reply_ticket(ticket_id, reply):
 def close_ticket(ticket_id):
     with connect() as db:
         cur = db.cursor()
-        cur.execute("""
-            UPDATE support_tickets
-            SET status = 'closed'
-            WHERE id = %s
-        """, (int(ticket_id),))
+        cur.execute(
+            "UPDATE support_tickets SET status='closed' WHERE id=%s",
+            (int(ticket_id),),
+        )
         changed = cur.rowcount > 0
         cur.close()
         return changed
@@ -412,8 +433,7 @@ def list_user_tickets(user_id, limit=10):
     with connect() as db:
         cur = db.cursor(dictionary=True)
         cur.execute("""
-            SELECT *
-            FROM support_tickets
+            SELECT * FROM support_tickets
             WHERE user_id = %s
             ORDER BY created_at DESC
             LIMIT %s
@@ -441,11 +461,10 @@ def create_join_request(requester_id, group_link):
 def get_join_request(request_id):
     with connect() as db:
         cur = db.cursor(dictionary=True)
-        cur.execute("""
-            SELECT *
-            FROM group_join_requests
-            WHERE id = %s
-        """, (int(request_id),))
+        cur.execute(
+            "SELECT * FROM group_join_requests WHERE id=%s",
+            (int(request_id),),
+        )
         result = cur.fetchone()
         cur.close()
         return result
@@ -455,8 +474,7 @@ def list_join_requests(status="pending", limit=20):
     with connect() as db:
         cur = db.cursor(dictionary=True)
         cur.execute("""
-            SELECT *
-            FROM group_join_requests
+            SELECT * FROM group_join_requests
             WHERE status = %s
             ORDER BY created_at DESC
             LIMIT %s
@@ -479,6 +497,119 @@ def decide_join_request(request_id, status, owner_id):
                 decided_by = %s
             WHERE id = %s AND status = 'pending'
         """, (status, int(owner_id), int(request_id)))
+        changed = cur.rowcount > 0
+        cur.close()
+        return changed
+
+
+# ---------------- GRUPPENMODERATION ----------------
+
+DEFAULT_MODERATION_SETTINGS = {
+    "anti_spam": 0,
+    "anti_insult": 0,
+    "anti_sticker": 0,
+    "welcome_enabled": 0,
+    "welcome_text": "Willkommen {name}!",
+    "rules": "",
+    "warning_limit": 3,
+}
+
+
+def get_group_settings(chat_id):
+    """Liefert Gruppeneinstellungen; legt bei Bedarf Standardwerte an."""
+    chat_id = int(chat_id)
+
+    with connect() as db:
+        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            INSERT IGNORE INTO group_moderation_settings (chat_id)
+            VALUES (%s)
+        """, (chat_id,))
+        cur.execute("""
+            SELECT * FROM group_moderation_settings WHERE chat_id=%s
+        """, (chat_id,))
+        row = cur.fetchone()
+        cur.close()
+
+    if not row:
+        return {"chat_id": chat_id, **DEFAULT_MODERATION_SETTINGS.copy()}
+
+    for key, value in DEFAULT_MODERATION_SETTINGS.items():
+        row.setdefault(key, value)
+
+    return row
+
+
+def set_group_setting(chat_id, setting, value):
+    """Ändert genau eine erlaubte Einstellung einer Gruppe."""
+    allowed = {
+        "anti_spam",
+        "anti_insult",
+        "anti_sticker",
+        "welcome_enabled",
+        "welcome_text",
+        "rules",
+        "warning_limit",
+    }
+    if setting not in allowed:
+        raise ValueError("Unbekannte Moderationseinstellung.")
+
+    chat_id = int(chat_id)
+
+    # Tabellenzeile vor dem Update sicherstellen.
+    get_group_settings(chat_id)
+
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"UPDATE group_moderation_settings SET {setting}=%s "
+            "WHERE chat_id=%s",
+            (value, chat_id),
+        )
+        cur.close()
+
+    return get_group_settings(chat_id)
+
+
+def get_group_warnings(chat_id, user_id):
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            SELECT warning_count
+            FROM group_warnings
+            WHERE chat_id=%s AND user_id=%s
+        """, (int(chat_id), int(user_id)))
+        row = cur.fetchone()
+        cur.close()
+        return int(row[0]) if row else 0
+
+
+def add_group_warning(chat_id, user_id):
+    """Erhöht die Verwarnungen für einen Nutzer in einer bestimmten Gruppe."""
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO group_warnings (chat_id, user_id, warning_count)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE
+                warning_count = warning_count + 1
+        """, (int(chat_id), int(user_id)))
+        cur.execute("""
+            SELECT warning_count FROM group_warnings
+            WHERE chat_id=%s AND user_id=%s
+        """, (int(chat_id), int(user_id)))
+        count = int(cur.fetchone()[0])
+        cur.close()
+        return count
+
+
+def reset_group_warnings(chat_id, user_id):
+    with connect() as db:
+        cur = db.cursor()
+        cur.execute("""
+            DELETE FROM group_warnings
+            WHERE chat_id=%s AND user_id=%s
+        """, (int(chat_id), int(user_id)))
         changed = cur.rowcount > 0
         cur.close()
         return changed
