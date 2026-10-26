@@ -3,6 +3,7 @@
 # MySQL-Version mit Support-Dialog, Minispielen und Moderationsmenü
 
 import random
+import logging
 
 import database
 from config import OWNER_ID
@@ -20,6 +21,8 @@ from telegram.ext import (
     filters,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------- MENÜ ----------------
 
@@ -34,10 +37,7 @@ def main_keyboard():
             InlineKeyboardButton("🏆 Rangliste", callback_data="menu:leaderboard"),
         ],
         [
-            InlineKeyboardButton(
-                "🛡️ Moderation",
-                callback_data="menu:moderation",
-            ),
+            InlineKeyboardButton("🛡️ Moderation", callback_data="menu:moderation"),
         ],
         [
             InlineKeyboardButton("📜 Regeln", callback_data="menu:rules"),
@@ -57,36 +57,11 @@ def back_keyboard():
 
 def moderation_keyboard():
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "👮 Admins anzeigen",
-                callback_data="mod:admins",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📋 Gruppeninformationen",
-                callback_data="mod:groupinfo",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📜 Gruppenregeln",
-                callback_data="mod:rules",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "⚙️ Moderationsbefehle",
-                callback_data="mod:commands",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Zurück zum Hauptmenü",
-                callback_data="menu:home",
-            ),
-        ],
+        [InlineKeyboardButton("👮 Admins anzeigen", callback_data="mod:admins")],
+        [InlineKeyboardButton("📋 Gruppeninformationen", callback_data="mod:groupinfo")],
+        [InlineKeyboardButton("📜 Gruppenregeln", callback_data="mod:rules")],
+        [InlineKeyboardButton("⚙️ Moderationsbefehle", callback_data="mod:commands")],
+        [InlineKeyboardButton("⬅️ Zurück zum Hauptmenü", callback_data="menu:home")],
     ])
 
 
@@ -115,8 +90,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not account:
             await query.edit_message_text(
-                "🔒 Ich finde dein Konto gerade nicht. "
-                "Registriere dich bitte mit /register.",
+                "🔒 Ich finde dein Konto gerade nicht. Registriere dich bitte mit /register.",
                 reply_markup=back_keyboard(),
             )
             return
@@ -138,8 +112,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/coinflip – Münzwurf\n"
             "/guess – Zahl erraten\n"
             "/rps – Schere, Stein, Papier\n"
-            "/quiz – Quizfrage\n\n"
-            "Viel Spaß!",
+            "/quiz – Quizfrage\n\nViel Spaß!",
             reply_markup=back_keyboard(),
         )
 
@@ -160,9 +133,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🛡️ MODERATIONSVERWALTUNG\n\n"
             "Hier findest du die Verwaltung deiner Telegram-Gruppe.\n\n"
-            "Wähle eine Option aus. Gruppenbefehle funktionieren "
-            "nur, wenn der Bot in der betreffenden Gruppe ist und "
-            "die nötigen Telegram-Rechte besitzt.",
+            "Wähle eine Option aus. Gruppenbefehle funktionieren nur, "
+            "wenn der Bot in der betreffenden Gruppe ist und die nötigen Telegram-Rechte besitzt.",
             reply_markup=moderation_keyboard(),
         )
 
@@ -179,53 +151,37 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu:about":
         await query.edit_message_text(
             "ℹ️ LOL STUDIOS MANAGER\n\n"
-            "Ein Community-Bot von LOL Studios mit Profilen, "
-            "Minispielen, Punkten und Support.",
+            "Ein Community-Bot von LOL Studios mit Profilen, Minispielen, Punkten und Support.",
             reply_markup=back_keyboard(),
         )
 
 
 # ---------------- MODERATIONSMENÜ ----------------
 
-async def moderation_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def moderation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data or ""
 
     if data == "mod:admins":
-        await query.edit_message_text(
+        text = (
             "👮 GRUPPENADMINS\n\n"
-            "Öffne deine Telegram-Gruppe und nutze dort:\n"
-            "/admins\n\n"
-            "Der Bot muss Mitglied der Gruppe sein.",
-            reply_markup=moderation_keyboard(),
+            "Öffne deine Telegram-Gruppe und nutze dort:\n/admins\n\n"
+            "Der Bot muss Mitglied der Gruppe sein."
         )
-
     elif data == "mod:groupinfo":
-        await query.edit_message_text(
+        text = (
             "📋 GRUPPENINFORMATIONEN\n\n"
-            "Öffne die Gruppe, die du verwalten möchtest, "
-            "und sende dort:\n"
-            "/groupinfo",
-            reply_markup=moderation_keyboard(),
+            "Öffne die Gruppe, die du verwalten möchtest, und sende dort:\n/groupinfo"
         )
-
     elif data == "mod:rules":
-        await query.edit_message_text(
+        text = (
             "📜 GRUPPENREGELN\n\n"
-            "Öffne die betreffende Telegram-Gruppe und nutze:\n"
-            "/grouprules\n\n"
-            "Die Regeln werden über die Gruppenverwaltung "
-            "festgelegt, sofern diese Funktion dort unterstützt wird.",
-            reply_markup=moderation_keyboard(),
+            "Öffne die betreffende Telegram-Gruppe und nutze:\n/grouprules"
         )
-
     elif data == "mod:commands":
-        await query.edit_message_text(
+        text = (
             "⚙️ MODERATIONSBEFEHLE\n\n"
             "👮 /admins – Admins anzeigen\n"
             "📋 /groupinfo – Gruppeninformationen\n"
@@ -237,11 +193,12 @@ async def moderation_callback(
             "🔊 /userunmute – Stummschaltung aufheben\n"
             "⬆️ /promote – Mitglied befördern\n"
             "⬇️ /demote – Adminrechte entziehen\n"
-            "👋 /welcome – Begrüßung konfigurieren\n\n"
-            "Hinweis: Ob ein Befehl funktioniert, hängt von "
-            "der implementierten Funktion und den Bot-Rechten ab.",
-            reply_markup=moderation_keyboard(),
+            "👋 /welcome – Begrüßung konfigurieren"
         )
+    else:
+        return
+
+    await query.edit_message_text(text, reply_markup=moderation_keyboard())
 
 
 # ---------------- ALLGEMEINE BEFEHLE ----------------
@@ -258,19 +215,14 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "📜 Regeln:\n"
-        "1. Respektvoll bleiben.\n"
-        "2. Nicht spammen.\n"
-        "3. Probleme mit /report melden."
+        "📜 Regeln:\n1. Respektvoll bleiben.\n2. Nicht spammen.\n3. Probleme mit /report melden."
     )
 
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user:
-        await update.effective_message.reply_text(
-            f"🆔 Deine Telegram-ID: {user.id}"
-        )
+        await update.effective_message.reply_text(f"🆔 Deine Telegram-ID: {user.id}")
 
 
 async def roll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -289,7 +241,6 @@ async def coinflip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def guess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["guess_number"] = random.randint(1, 10)
-
     await update.effective_message.reply_text(
         "🔢 Ich habe eine Zahl zwischen 1 und 10 gewählt!\n"
         "Rate mit /guess ZAHL, zum Beispiel /guess 5."
@@ -304,9 +255,7 @@ async def guess_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.effective_message.reply_text(
-            "Gib deinen Tipp so ein: /guess 5"
-        )
+        await update.effective_message.reply_text("Gib deinen Tipp so ein: /guess 5")
         return
 
     try:
@@ -318,9 +267,7 @@ async def guess_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not 1 <= number <= 10:
-        await update.effective_message.reply_text(
-            "Nimm eine Zahl zwischen 1 und 10."
-        )
+        await update.effective_message.reply_text("Nimm eine Zahl zwischen 1 und 10.")
         return
 
     if number == target:
@@ -355,7 +302,6 @@ async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "stein": "✊ Stein",
         "papier": "✋ Papier",
     }
-
     player = context.args[0].lower()
 
     if player not in choices:
@@ -379,34 +325,17 @@ async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = "Diesmal habe ich gewonnen! Versuch's nochmal."
 
     await update.effective_message.reply_text(
-        f"Du: {choices[player]}\n"
-        f"Ich: {choices[bot_choice]}\n\n{result}"
+        f"Du: {choices[player]}\nIch: {choices[bot_choice]}\n\n{result}"
     )
 
 
 # ---------------- QUIZ ----------------
 
 QUIZ_QUESTIONS = [
-    {
-        "question": "Wie viele Seiten hat ein Würfel?",
-        "answers": ["4", "6", "8"],
-        "correct": 1,
-    },
-    {
-        "question": "Welcher Planet ist als Roter Planet bekannt?",
-        "answers": ["Mars", "Venus", "Jupiter"],
-        "correct": 0,
-    },
-    {
-        "question": "Wie viele Minuten hat eine Stunde?",
-        "answers": ["30", "60", "100"],
-        "correct": 1,
-    },
-    {
-        "question": "Welche Sprache wird für viele Telegram-Bots verwendet?",
-        "answers": ["Python", "HTML allein", "CSS allein"],
-        "correct": 0,
-    },
+    {"question": "Wie viele Seiten hat ein Würfel?", "answers": ["4", "6", "8"], "correct": 1},
+    {"question": "Welcher Planet ist als Roter Planet bekannt?", "answers": ["Mars", "Venus", "Jupiter"], "correct": 0},
+    {"question": "Wie viele Minuten hat eine Stunde?", "answers": ["30", "60", "100"], "correct": 1},
+    {"question": "Welche Sprache wird für viele Telegram-Bots verwendet?", "answers": ["Python", "HTML allein", "CSS allein"], "correct": 0},
 ]
 
 
@@ -415,14 +344,10 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["quiz_answer"] = question["correct"]
     context.user_data["quiz_active"] = True
 
-    buttons = []
-    for index, answer in enumerate(question["answers"]):
-        buttons.append([
-            InlineKeyboardButton(
-                answer,
-                callback_data=f"quiz:{index}",
-            )
-        ])
+    buttons = [
+        [InlineKeyboardButton(answer, callback_data=f"quiz:{index}")]
+        for index, answer in enumerate(question["answers"])
+    ]
 
     await update.effective_message.reply_text(
         f"🧠 QUIZ\n\n{question['question']}",
@@ -452,8 +377,7 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if answer == correct:
         points = database.add_points(query.from_user.id, 10)
         await query.edit_message_text(
-            f"🎉 Richtig beantwortet!\n"
-            f"Du bekommst 10 Punkte.\nPunktestand: {points}"
+            f"🎉 Richtig beantwortet!\nDu bekommst 10 Punkte.\nPunktestand: {points}"
         )
     else:
         await query.edit_message_text(
@@ -481,7 +405,6 @@ def leaderboard_text():
         return "🏆 Noch gibt es keine Einträge in der Rangliste."
 
     lines = ["🏆 RANGLISTE\n"]
-
     for index, row in enumerate(rows, 1):
         name = row.get("name") or row.get("username") or "Unbekannt"
         amount = row.get("amount") or 0
@@ -504,14 +427,12 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not success:
         await update.effective_message.reply_text(
             "🎁 Deine Tagesbelohnung hast du heute schon abgeholt.\n"
-            f"💰 Punktestand: {total}\n"
-            "Morgen wartet die nächste Belohnung!"
+            f"💰 Punktestand: {total}\nMorgen wartet die nächste Belohnung!"
         )
         return
 
     await update.effective_message.reply_text(
-        "🎉 Deine tägliche Belohnung ist da!\n"
-        "+100 Punkte\n"
+        "🎉 Deine tägliche Belohnung ist da!\n+100 Punkte\n"
         f"💰 Punktestand: {total}"
     )
 
@@ -532,24 +453,17 @@ async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(name) > 50:
-        await update.effective_message.reply_text(
-            "Der Name darf höchstens 50 Zeichen haben."
-        )
+        await update.effective_message.reply_text("Der Name darf höchstens 50 Zeichen haben.")
         return
 
     with database.connect() as db:
         cur = db.cursor()
-        cur.execute(
-            "UPDATE accounts SET name = %s WHERE user_id = %s",
-            (name, user.id),
-        )
+        cur.execute("UPDATE accounts SET name = %s WHERE user_id = %s", (name, user.id))
         changed = cur.rowcount > 0
         cur.close()
 
     if changed:
-        await update.effective_message.reply_text(
-            f"Alles klar! Dein Name ist jetzt {name}."
-        )
+        await update.effective_message.reply_text(f"Alles klar! Dein Name ist jetzt {name}.")
     else:
         await update.effective_message.reply_text(
             "Ich finde noch kein Konto für dich. Starte bitte mit /register."
@@ -570,17 +484,12 @@ async def setbio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(bio) > 200:
-        await update.effective_message.reply_text(
-            "Deine Bio darf höchstens 200 Zeichen haben."
-        )
+        await update.effective_message.reply_text("Deine Bio darf höchstens 200 Zeichen haben.")
         return
 
     with database.connect() as db:
         cur = db.cursor()
-        cur.execute(
-            "UPDATE accounts SET bio = %s WHERE user_id = %s",
-            (bio, user.id),
-        )
+        cur.execute("UPDATE accounts SET bio = %s WHERE user_id = %s", (bio, user.id))
         changed = cur.rowcount > 0
         cur.close()
 
@@ -629,7 +538,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         )
     except Exception:
-        pass
+        logger.exception("Report-Benachrichtigung konnte nicht gesendet werden.")
 
 
 # ---------------- SUPPORT-DIALOG ----------------
@@ -677,16 +586,20 @@ async def _create_support_ticket(
 
     if len(message) > 3000:
         await msg.reply_text(
-            "Deine Nachricht ist ziemlich lang. "
-            "Bitte kürze sie auf höchstens 3000 Zeichen."
+            "Deine Nachricht ist ziemlich lang. Bitte kürze sie auf höchstens 3000 Zeichen."
         )
         return
 
     try:
         ticket_id = database.create_ticket(user.id, message)
     except Exception:
+        logger.exception(
+            "Support-Ticket konnte nicht gespeichert werden (user_id=%s)",
+            user.id,
+        )
         await msg.reply_text(
             "Oh, das Ticket konnte gerade nicht gespeichert werden. "
+            "Der Fehler wurde in den Bot-Logs protokolliert. "
             "Bitte versuch es später noch einmal."
         )
         return
@@ -713,7 +626,10 @@ async def _create_support_ticket(
             ),
         )
     except Exception:
-        pass
+        logger.exception(
+            "Support-Ticket #%s wurde gespeichert, aber Owner-Benachrichtigung schlug fehl.",
+            ticket_id,
+        )
 
 
 async def support_message_handler(
@@ -742,10 +658,11 @@ async def supportreply_command(
     user = update.effective_user
     msg = update.effective_message
 
-    if not user or user.id != OWNER_ID:
-        await msg.reply_text(
-            "⛔ Nur der Bot-Owner kann Support-Tickets beantworten."
-        )
+    if not user or not msg:
+        return
+
+    if user.id != OWNER_ID:
+        await msg.reply_text("⛔ Nur der Bot-Owner kann Support-Tickets beantworten.")
         return
 
     if len(context.args) < 2:
@@ -766,7 +683,12 @@ async def supportreply_command(
         await msg.reply_text("Schreib bitte noch deine Antwort dazu.")
         return
 
-    ticket = database.get_ticket(ticket_id)
+    try:
+        ticket = database.get_ticket(ticket_id)
+    except Exception:
+        logger.exception("Fehler beim Laden von Support-Ticket #%s", ticket_id)
+        await msg.reply_text("Das Ticket konnte gerade nicht geladen werden.")
+        return
 
     if not ticket:
         await msg.reply_text("Ich finde dieses Ticket leider nicht.")
@@ -776,7 +698,14 @@ async def supportreply_command(
         await msg.reply_text("Dieses Ticket ist bereits geschlossen.")
         return
 
-    if not database.reply_ticket(ticket_id, reply):
+    try:
+        saved = database.reply_ticket(ticket_id, reply)
+    except Exception:
+        logger.exception("Fehler beim Speichern der Antwort auf Ticket #%s", ticket_id)
+        await msg.reply_text("Die Antwort konnte nicht gespeichert werden.")
+        return
+
+    if not saved:
         await msg.reply_text("Die Antwort konnte nicht gespeichert werden.")
         return
 
@@ -788,10 +717,12 @@ async def supportreply_command(
                 f"{reply}"
             ),
         )
-        await msg.reply_text(
-            f"✅ Antwort zu Ticket #{ticket_id} wurde gesendet."
-        )
+        await msg.reply_text(f"✅ Antwort zu Ticket #{ticket_id} wurde gesendet.")
     except Exception:
+        logger.exception(
+            "Antwort auf Ticket #%s gespeichert, aber Zustellung fehlgeschlagen.",
+            ticket_id,
+        )
         await msg.reply_text(
             "Die Antwort wurde gespeichert, aber ich konnte sie dem Nutzer nicht zustellen."
         )
@@ -802,11 +733,17 @@ async def mytickets_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
-
     if not user:
         return
 
-    tickets = database.list_user_tickets(user.id, limit=10)
+    try:
+        tickets = database.list_user_tickets(user.id, limit=10)
+    except Exception:
+        logger.exception("Support-Tickets konnten nicht geladen werden (user_id=%s)", user.id)
+        await update.effective_message.reply_text(
+            "Deine Tickets konnten gerade nicht geladen werden."
+        )
+        return
 
     if not tickets:
         await update.effective_message.reply_text(
@@ -815,11 +752,9 @@ async def mytickets_command(
         return
 
     lines = ["📨 DEINE SUPPORT-TICKETS\n"]
-
     for ticket in tickets:
         lines.append(
-            f"#{ticket['id']} — {ticket['status']} — "
-            f"{str(ticket['message'])[:120]}"
+            f"#{ticket['id']} — {ticket['status']} — {str(ticket['message'])[:120]}"
         )
 
     await update.effective_message.reply_text("\n".join(lines))
@@ -885,6 +820,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/report TEXT – Problem melden\n"
         "/support – Support-Dialog starten\n"
         "/supportcancel – Support-Dialog abbrechen\n"
+        "/supportreply ID TEXT – Support-Ticket beantworten (Owner)\n"
         "/mytickets – eigene Tickets anzeigen"
     )
 
@@ -892,21 +828,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- HANDLER REGISTRIEREN ----------------
 
 def register_feature_handlers(application: Application):
-    application.add_handler(
-        CommandHandler("menu", menu_command),
-        group=1,
-    )
+    application.add_handler(CommandHandler("menu", menu_command), group=1)
 
     application.add_handler(
         CallbackQueryHandler(menu_callback, pattern=r"^menu:"),
         group=1,
     )
-
     application.add_handler(
         CallbackQueryHandler(moderation_callback, pattern=r"^mod:"),
         group=1,
     )
-
     application.add_handler(
         CallbackQueryHandler(quiz_callback, pattern=r"^quiz:"),
         group=1,
@@ -917,6 +848,7 @@ def register_feature_handlers(application: Application):
         ("about", about_command),
         ("rules", rules_command),
         ("id", id_command),
+        ("myid", id_command),
         ("roll", roll_command),
         ("coinflip", coinflip_command),
         ("guess", guess_answer),
