@@ -98,7 +98,8 @@ def init_db():
                 )
             """)
 
-            # Wichtig: TEXT darf hier keinen DEFAULT-Wert haben.
+            # TEXT hat keinen DEFAULT-Wert.
+            # Beim Erstellen eines Tickets wird reply explizit gesetzt.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -289,6 +290,7 @@ def add_points(user_id, amount):
                 VALUES (%s, %s)
                 ON DUPLICATE KEY UPDATE amount = amount + %s
             """, (int(user_id), amount, amount))
+
             cur.execute(
                 "SELECT amount FROM points WHERE user_id=%s",
                 (int(user_id),),
@@ -378,7 +380,6 @@ def create_ticket(user_id, message):
     with connect() as db:
         cur = db.cursor()
         try:
-            # reply wird beim Anlegen ausdrücklich als leerer Text gesetzt.
             cur.execute("""
                 INSERT INTO support_tickets
                     (user_id, message, reply, status)
@@ -419,19 +420,22 @@ def list_tickets(status="open", limit=10):
 
 def reply_ticket(ticket_id, reply):
     reply = str(reply).strip()
+
     if not reply:
         raise ValueError("Die Antwort darf nicht leer sein.")
 
     with connect() as db:
         cur = db.cursor()
         try:
+            # replied_at wird absichtlich nicht aktualisiert,
+            # damit eine fehlende Spalte keine Antwort verhindert.
             cur.execute("""
                 UPDATE support_tickets
                 SET reply = %s,
-                    status = 'answered',
-                    replied_at = CURRENT_TIMESTAMP
+                    status = 'answered'
                 WHERE id = %s
             """, (reply, int(ticket_id)))
+
             return cur.rowcount > 0
         finally:
             cur.close()
