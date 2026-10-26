@@ -103,7 +103,7 @@ def init_db():
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 user_id BIGINT NOT NULL,
                 message TEXT NOT NULL,
-                reply TEXT NULL DEFAULT NULL,
+                reply TEXT NOT NULL DEFAULT '',
                 status VARCHAR(20) NOT NULL DEFAULT 'open',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 replied_at TIMESTAMP NULL,
@@ -366,7 +366,7 @@ def create_ticket(user_id, message):
         cur.execute("""
             INSERT INTO support_tickets
                 (user_id, message, reply, status)
-            VALUES (%s, %s, NULL, 'open')
+            VALUES (%s, %s, '', 'open')
         """, (int(user_id), message))
         ticket_id = cur.lastrowid
         cur.close()
