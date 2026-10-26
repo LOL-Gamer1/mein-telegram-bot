@@ -103,7 +103,7 @@ def init_db():
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 user_id BIGINT NOT NULL,
                 message TEXT NOT NULL,
-                reply TEXT NULL,
+                reply TEXT NULL DEFAULT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'open',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 replied_at TIMESTAMP NULL,
@@ -112,7 +112,6 @@ def init_db():
             )
         """)
 
-        # Dauerhafte Moderationseinstellungen pro Telegram-Gruppe
         cur.execute("""
             CREATE TABLE IF NOT EXISTS group_moderation_settings (
                 chat_id BIGINT PRIMARY KEY,
@@ -128,7 +127,6 @@ def init_db():
             )
         """)
 
-        # Verwarnungen einzelner Nutzer in einzelnen Gruppen
         cur.execute("""
             CREATE TABLE IF NOT EXISTS group_warnings (
                 chat_id BIGINT NOT NULL,
@@ -292,6 +290,7 @@ def claim_daily(user_id, amount=100):
     from datetime import datetime, timezone
 
     today = datetime.now(timezone.utc).date()
+
     with connect() as db:
         cur = db.cursor()
         cur.execute(
@@ -316,6 +315,7 @@ def claim_daily(user_id, amount=100):
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE amount = amount + %s
         """, (int(user_id), amount, amount))
+
         cur.execute(
             "SELECT amount FROM points WHERE user_id=%s",
             (int(user_id),),
@@ -364,8 +364,9 @@ def create_ticket(user_id, message):
     with connect() as db:
         cur = db.cursor()
         cur.execute("""
-            INSERT INTO support_tickets (user_id, message, status)
-            VALUES (%s, %s, 'open')
+            INSERT INTO support_tickets
+                (user_id, message, reply, status)
+            VALUES (%s, %s, NULL, 'open')
         """, (int(user_id), message))
         ticket_id = cur.lastrowid
         cur.close()
@@ -521,10 +522,17 @@ def get_group_settings(chat_id):
 
     with connect() as db:
         cur = db.cursor(dictionary=True)
+
         cur.execute("""
-            INSERT IGNORE INTO group_moderation_settings (chat_id)
-            VALUES (%s)
-        """, (chat_id,))
+            INSERT IGNORE INTO group_moderation_settings
+                (chat_id, welcome_text, rules)
+            VALUES (%s, %s, %s)
+        """, (
+            chat_id,
+            DEFAULT_MODERATION_SETTINGS["welcome_text"],
+            DEFAULT_MODERATION_SETTINGS["rules"],
+        ))
+
         cur.execute("""
             SELECT * FROM group_moderation_settings WHERE chat_id=%s
         """, (chat_id,))
@@ -555,8 +563,6 @@ def set_group_setting(chat_id, setting, value):
         raise ValueError("Unbekannte Moderationseinstellung.")
 
     chat_id = int(chat_id)
-
-    # Tabellenzeile vor dem Update sicherstellen.
     get_group_settings(chat_id)
 
     with connect() as db:
@@ -594,6 +600,7 @@ def add_group_warning(chat_id, user_id):
             ON DUPLICATE KEY UPDATE
                 warning_count = warning_count + 1
         """, (int(chat_id), int(user_id)))
+
         cur.execute("""
             SELECT warning_count FROM group_warnings
             WHERE chat_id=%s AND user_id=%s
